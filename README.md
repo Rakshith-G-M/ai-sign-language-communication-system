@@ -1,14 +1,14 @@
 # AI Sign Language Communication System
 
-A real-time AI system that converts **sign language gestures into text and speech** using computer vision and machine learning.
+A real-time AI system that converts **sign language hand gestures into text and speech** using computer vision and machine learning.
 
-This project aims to bridge the communication gap between **deaf and hearing individuals** by enabling real-time sign language recognition using a webcam.
+This project aims to reduce the communication barrier between **deaf and hearing individuals** by enabling a system that can understand sign language through a webcam and translate it into readable and spoken language.
 
 ---
 
 ## Project Overview
 
-The system detects hand gestures using **MediaPipe and OpenCV**, classifies the gesture using **machine learning**, and converts the recognized sign into **text and speech output**.
+The system detects hand gestures using **MediaPipe and OpenCV**, extracts hand landmark features, and uses a machine learning model to classify gestures. The recognized gesture is then converted into **text output and optional speech output**.
 
 ---
 
@@ -17,119 +17,129 @@ The system detects hand gestures using **MediaPipe and OpenCV**, classifies the 
 - Real-time hand landmark detection
 - Sign language gesture recognition
 - Gesture to text conversion
-- Text to speech output
+- Text-to-speech output
 - Webcam-based interaction
+- Modular and scalable project architecture
 
 ---
 
 ## Tech Stack
 
-**Programming Language**
+### Programming Language
 - Python
 
-**Libraries & Frameworks**
+### Libraries and Frameworks
 - OpenCV
 - MediaPipe
 - Scikit-learn
 - Streamlit
 - NumPy
+- Pandas
+- Matplotlib
 
 ---
 
 ## Project Structure
 
-```text
+```
 ai-sign-language-communication-system
 │
-├── src/
-│   └── vision/
+├── src
+│   └── vision
 │       └── hand_detector.py
 │
-├── dataset/
+├── dataset
 │
-├── models/
+├── models
 │
 ├── app.py
 ├── requirements.txt
 ├── README.md
 └── .gitignore
+```
 
 ---
 
 ## Installation
 
-Clone the repository:
+### 1. Clone the repository
 
-
+```
 git clone https://github.com/YOUR_USERNAME/ai-sign-language-communication-system.git
+```
 
+### 2. Navigate to the project directory
 
-Navigate into the project directory:
-
-
+```
 cd ai-sign-language-communication-system
+```
 
+### 3. Create a virtual environment
 
-Create virtual environment:
-
-
+```
 python -m venv venv
+```
 
+### 4. Activate the virtual environment
 
-Activate environment:
+**Windows**
 
-Windows
-
-
+```
 venv\Scripts\activate
+```
 
+**Mac/Linux**
 
-Install dependencies:
+```
+source venv/bin/activate
+```
 
+### 5. Install dependencies
 
+```
 pip install -r requirements.txt
-
+```
 
 ---
 
 ## Development Roadmap
 
-Stage 1  
-Environment setup and project structure
+### Stage 1
+Environment setup and repository initialization
 
-Stage 2  
-Hand landmark detection using MediaPipe
+### Stage 2
+Hand landmark detection using MediaPipe and OpenCV
 
-Stage 3  
+### Stage 3
 Gesture dataset creation
 
-Stage 4  
-Machine learning model for gesture classification
+### Stage 4
+Machine learning model training for gesture classification
 
-Stage 5  
-Real-time gesture recognition
+### Stage 5
+Real-time gesture recognition system
 
-Stage 6  
+### Stage 6
 Text-to-speech integration
 
 ---
 
 ## Future Improvements
 
-- Support for full ASL vocabulary
+- Support for a larger sign language vocabulary
 - Deep learning based gesture recognition
-- Mobile application integration
+- Mobile or web application deployment
 - Multi-language speech output
+- Real-time sentence generation
 
 ---
 
 ## Author
 
-Rakshith G M
+Rakshith G M  
+BCA Student | AI & Computer Vision Enthusiast  
 
-BCA Student | AI & Computer Vision Enthusiast
-
-GitHub  
+GitHub:  
 https://github.com/Rakshith-web-dev
 
 ---
