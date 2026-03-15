@@ -150,9 +150,9 @@ python src/vision/hand_detector.py
 | Milestone | Status | Description |
 |---|---|---|
 | Real-time hand landmark detection | Complete | MediaPipe integration with 21-keypoint extraction |
-| Gesture classification model | In Progress | Scikit-Learn classifier trained on ASL dataset |
-| Streamlit application UI | In Progress | Live feed with transcription overlay |
-| Text-to-speech output | In Progress | Synthesized speech from recognized gestures |
+| Gesture classification model | Complete | Scikit-Learn classifier trained on ASL dataset |
+| Streamlit application UI | Complete | Live feed with transcription overlay |
+| Text-to-speech output | Complete | Synthesized speech from recognized gestures |
 | Multi-hand support | In Progress | Simultaneous detection of both hands |
 | Expanded gesture vocabulary | In Progress | Extending beyond static ASL alphabet to dynamic signs |
 | Mobile / edge deployment | Planned | ONNX export for on-device inference |
