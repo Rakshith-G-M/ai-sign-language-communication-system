@@ -26,6 +26,7 @@ Dependencies:
 """
 
 import sys
+import time                                          # ← ADDED
 import logging
 from collections import deque, Counter
 from pathlib import Path
@@ -36,6 +37,7 @@ import numpy as np
 import mediapipe as mp
 
 from src.ml.feature_engineering import extract_hand_features_v2, TOTAL_FEATURES_V2
+from src.inference.text_builder import TextBuilder   # ← ADDED
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -304,6 +306,15 @@ def predict_sign(hand_landmarks, model, encoder) -> str | None:
     # so corrected letters are smoothed identically to normal predictions.
     letter_candidate = apply_gesture_rules(letter_candidate, hand_landmarks)
 
+    # ── A/S ambiguity filter ──────────────────────────────────────────────────
+    # A and S share very similar fist geometry; the model frequently confuses
+    # them at moderate confidence.  Require a stricter threshold for either
+    # letter so only high-certainty frames enter the stabilisation buffer.
+    # Weak frames are suppressed (None) rather than returned early so that the
+    # buffer and hysteresis layers continue operating normally.
+    if letter_candidate in ("A", "S") and confidence < 0.75:
+        return None
+
     return str(letter_candidate)
 
 
@@ -377,6 +388,152 @@ def draw_quit_hint(frame) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Module-level state — shared across predict_frame() calls
+# ─────────────────────────────────────────────────────────────────────────────
+# These objects are initialised once at import time so that every call to
+# predict_frame() shares the same rolling buffer and hysteresis counter,
+# giving the stabilisation layers the same cross-frame memory they have
+# in the standalone run_predictor() loop.
+#
+# _pf_model / _pf_encoder : loaded XGBClassifier + LabelEncoder
+# _pf_buffer              : rolling majority-vote deque  (Layer 2)
+# _pf_candidate           : current hysteresis candidate (Layer 3)
+# _pf_stability           : consecutive-frame streak counter
+# _pf_stable              : the last letter that cleared the stability gate
+# _pf_hands               : persistent MediaPipe Hands context (tracking mode)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _init_predict_frame_state():
+    """Load model artefacts and build all module-level state for predict_frame()."""
+    global _pf_model, _pf_encoder, _pf_buffer
+    global _pf_candidate, _pf_stability, _pf_stable, _pf_hands
+
+    _pf_model, _pf_encoder = load_model_artefacts()
+    _pf_buffer    = deque(maxlen=BUFFER_SIZE)
+    _pf_candidate = None
+    _pf_stability = 0
+    _pf_stable    = None
+    _pf_hands     = MP_HANDS.Hands(
+        static_image_mode=False,
+        max_num_hands=1,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+    log.info("predict_frame() state initialised.")
+
+# Initialise eagerly at import time so the first call to predict_frame()
+# has no setup latency.  Errors (missing model files) surface immediately.
+try:
+    _init_predict_frame_state()
+except FileNotFoundError as _pf_init_err:
+    log.warning("predict_frame() state NOT initialised: %s", _pf_init_err)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# predict_frame() — single-frame entry point for external callers (e.g. Streamlit)
+# ─────────────────────────────────────────────────────────────────────────────
+def predict_frame(
+    frame,
+) -> tuple:
+    """
+    Process one BGR frame through the full ASL prediction pipeline.
+
+    This is the public entry point for callers that manage their own capture
+    loop (e.g. the Streamlit UI).  It is intentionally free of any webcam or
+    display logic — those concerns remain in run_predictor().
+
+    Pipeline (mirrors run_predictor() exactly):
+        BGR frame (caller-supplied, already flipped if desired)
+          ↓  BGR → RGB
+          ↓  MediaPipe Hands (persistent tracking context)
+          ↓  draw_landmarks() on the input frame
+          ↓  normalize_hand_landmarks_copy()
+          ↓  predict_sign()          confidence gate + gesture rules + A/S filter
+          ↓  prediction_buffer       majority vote          (Layer 2)
+          ↓  hysteresis counter      stability gate         (Layer 3)
+          ↓  draw_prediction_overlay()
+          ↓  return annotated_frame, stable_letter, hand_detected
+
+    State persistence:
+        The buffer, candidate, and stability counter live at module level so
+        they accumulate correctly across successive calls, exactly as they do
+        inside the while-loop of run_predictor().
+
+    Args:
+        frame : np.ndarray — BGR image from cv2.VideoCapture or any source.
+                The frame is annotated in-place; pass a copy if you need the
+                original untouched.
+
+    Returns:
+        annotated_frame : np.ndarray — BGR frame with skeleton + letter overlay.
+        stable_letter   : str | None — stabilised letter, or None.
+        hand_detected   : bool       — True if MediaPipe found a hand.
+    """
+    global _pf_buffer, _pf_candidate, _pf_stability, _pf_stable
+
+    # ── BGR → RGB ─────────────────────────────────────────────────────────────
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    rgb.flags.writeable = False
+    results = _pf_hands.process(rgb)
+    rgb.flags.writeable = True
+
+    hand_detected = results.multi_hand_landmarks is not None
+
+    if hand_detected:
+        hand_landmarks = results.multi_hand_landmarks[0]
+
+        # Handedness (optional — None treated as Right, no x-flip)
+        handedness = None
+        if results.multi_handedness:
+            handedness = (
+                results.multi_handedness[0].classification[0].label
+            )   # "Left" | "Right"
+
+        # Draw skeleton using the ORIGINAL landmarks (real pixel coords)
+        draw_landmarks(frame, hand_landmarks)
+
+        # Deep-copy + orientation-normalise for prediction only
+        normalised_landmarks = normalize_hand_landmarks_copy(
+            hand_landmarks, handedness
+        )
+
+        # ── Layer 1: confidence gate + gesture rules + A/S filter ─────────────
+        raw_letter = predict_sign(normalised_landmarks, _pf_model, _pf_encoder)
+
+        # ── Layer 2: rolling majority-vote buffer ─────────────────────────────
+        if raw_letter is not None:
+            _pf_buffer.append(raw_letter)
+            vote = Counter(_pf_buffer).most_common(1)[0][0]
+        else:
+            vote = (
+                Counter(_pf_buffer).most_common(1)[0][0]
+                if _pf_buffer else None
+            )
+
+        # ── Layer 3: hysteresis lock ───────────────────────────────────────────
+        if vote == _pf_candidate:
+            _pf_stability += 1
+        else:
+            _pf_candidate = vote
+            _pf_stability = 1
+
+        if _pf_stability >= STABILITY_THRESHOLD:
+            _pf_stable = _pf_candidate
+
+    else:
+        # No hand — reset all three layers for a clean start on next sign
+        _pf_buffer.clear()
+        _pf_candidate = None
+        _pf_stability = 0
+        _pf_stable    = None
+
+    # ── Overlay ───────────────────────────────────────────────────────────────
+    draw_prediction_overlay(frame, _pf_stable)
+
+    return frame, _pf_stable, hand_detected
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main loop
 # ─────────────────────────────────────────────────────────────────────────────
 def run_predictor(camera_index: int = 0) -> None:
@@ -430,6 +587,9 @@ def run_predictor(camera_index: int = 0) -> None:
     candidate_letter:      str | None = None
     stability_counter:     int        = 0
 
+    # ── TextBuilder: converts stable letters → words → sentences ─────────────
+    text_builder = TextBuilder()                             # ← ADDED
+
     with MP_HANDS.Hands(
         static_image_mode=False,       # tracking mode — faster for video
         max_num_hands=1,
@@ -456,6 +616,10 @@ def run_predictor(camera_index: int = 0) -> None:
             rgb.flags.writeable = False
             results = hands.process(rgb)
             rgb.flags.writeable = True
+
+            # Derived once per frame; used by both the stabilisation logic
+            # below and TextBuilder so both always agree on hand presence.
+            hand_detected = results.multi_hand_landmarks is not None  # ← ADDED
 
             if results.multi_hand_landmarks:
                 hand_landmarks = results.multi_hand_landmarks[0]
@@ -513,6 +677,16 @@ def run_predictor(camera_index: int = 0) -> None:
                     # means the letter stays locked while the same sign holds,
                     # and only resets if a new candidate appears (branch above).
 
+                # ── TextBuilder update (hand present) ─────────────────────────
+                # Passes the fully stabilised letter so TextBuilder only ever
+                # sees letters that have cleared all three stability layers.
+                current_word, sentence = text_builder.update(  # ← ADDED
+                    current_stable_letter,                      # ← ADDED
+                    hand_detected,                              # ← ADDED
+                    time.time(),                                # ← ADDED
+                )                                               # ← ADDED
+                print("Word:", current_word, "| Sentence:", sentence)  # ← ADDED
+
             else:
                 # No hand detected — reset all three layers so the next sign
                 # starts completely fresh with no stale state carried over
@@ -520,6 +694,16 @@ def run_predictor(camera_index: int = 0) -> None:
                 candidate_letter      = None
                 stability_counter     = 0
                 current_stable_letter = None
+
+                # ── TextBuilder update (no hand) ──────────────────────────────
+                # Drives the space / sentence-finalisation timers even when
+                # the stabilisation state has already been wiped above.
+                current_word, sentence = text_builder.update(  # ← ADDED
+                    None,                                       # ← ADDED
+                    False,                                      # ← ADDED
+                    time.time(),                                # ← ADDED
+                )                                               # ← ADDED
+                print("Word:", current_word, "| Sentence:", sentence)  # ← ADDED
 
             # ── Render overlay and display ────────────────────────────────────
             draw_prediction_overlay(frame, current_stable_letter)
