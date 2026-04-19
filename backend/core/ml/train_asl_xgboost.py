@@ -34,7 +34,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 
-from src.ml.feature_engineering import TOTAL_FEATURES_V2
+from core.ml.feature_engineering import TOTAL_FEATURES_V2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants

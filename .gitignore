@@ -1,11 +1,50 @@
+# -----------------------------
+# Python (Backend)
+# -----------------------------
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .env
-.DS_Store
-.ipynb_checkpoints
-dataset/
+
+# Models / Data (avoid large files)
 models/
-*.csv
+dataset/
 *.pkl
 *.npy
+*.csv
+
+# Jupyter
+.ipynb_checkpoints/
+
+# -----------------------------
+# Node / React (Frontend)
+# -----------------------------
+node_modules/
+dist/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# -----------------------------
+# OS Files
+# -----------------------------
+.DS_Store
+Thumbs.db
+
+# -----------------------------
+# Editor
+# -----------------------------
+.vscode/
+.idea/
+
+# -----------------------------
+# Misc
+# -----------------------------
+*.log
+*.tmp
+*.bak

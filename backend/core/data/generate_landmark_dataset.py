@@ -51,7 +51,7 @@ import pandas as pd
 # ── Shared feature extractor: identical function used for dataset generation
 #    AND real-time inference — guarantees consistent feature ordering.
 #    v2 produces 126 features with wrist-origin / middle-MCP-scale normalisation.
-from src.ml.feature_engineering import extract_hand_features_v2, TOTAL_FEATURES_V2
+from core.ml.feature_engineering import extract_hand_features_v2, TOTAL_FEATURES_V2
 
 # Alias used throughout for readability — must equal _V2_STANDALONE_FEATURES
 # in feature_engineering.py (126).

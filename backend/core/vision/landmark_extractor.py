@@ -18,7 +18,7 @@ import numpy as np
 # Allow running directly from the project root or via `python src/vision/landmark_extractor.py`
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.vision.hand_detector import HandDetector
+from core.vision.hand_detector import HandDetector
 
 
 # Number of landmarks MediaPipe tracks per hand

@@ -230,220 +230,19 @@ def extract_hand_features(hand_landmarks) -> np.ndarray:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# v2  —  122-feature extraction (retrain required)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def extract_hand_features_v2(hand_landmarks) -> np.ndarray:
-    """
-    Convert MediaPipe Hands landmarks into a 122-dimensional feature vector.
-
-    Extends extract_hand_features() (v1, 82 features) with five additional
-    feature groups that significantly improve discrimination of similar ASL
-    gestures — A/I/Y, M/N, R/U/V, and flat-hand variants.
-
-    All features are computed in MediaPipe's normalised [0, 1] coordinate
-    space, so no additional scaling step is needed.
-
-    ──────────────────────────────────────────────────────────────────────────
-    Why each new group improves classification:
-
-    Group 5 — DIP Curvature Angles (10 features)
-        v1 captures the PIP joint only (the mid-knuckle bend).  Adding the
-        DIP joint (the knuckle nearest the fingertip) reveals the second
-        bend segment — critical for:
-          • A vs E vs S  : all closed fists, differ in tip-curl depth.
-          • M vs N       : stacked finger tips with different depth profiles.
-        Two angles per finger (MCP→PIP→DIP  and  PIP→DIP→TIP) give a full
-        curvature profile of each finger.  The thumb uses CMC→MCP→IP and
-        MCP→IP→TIP as its equivalent two-segment description.
-
-    Group 6 — All Fingertip Pair Distances (10 features)
-        v1 includes 9 hand-picked distances.  The complete C(5,2)=10 set of
-        tip-to-tip distances adds the missing pairs (index↔ring, index↔pinky,
-        middle↔pinky) and provides a symmetric, scale-independent description
-        of finger spread.  Key for:
-          • R/U/V  : crossed vs parallel vs spread adjacent fingers.
-          • H vs U : lateral spread between index and middle.
-
-    Group 7 — Thumb Position (2 features)
-        Two scalar distances anchor the thumb relative to the rest of the hand:
-          a) Thumb tip → palm centroid (mean of the four finger MCPs).
-             Captures how far the thumb is tucked in (A/E/S) vs extended (Y).
-          b) Thumb tip → index MCP.
-             Distinguishes A (thumb rests beside index base), Y (thumb fully
-             away), and I (pinky up, thumb neutral) — a notoriously confused
-             trio in standard 82-feature models.
-
-    Group 8 — Finger Direction Vectors (15 features, 5 fingers × xyz)
-        A unit vector from each finger's MCP to its TIP encodes pointing
-        direction independent of hand scale and absolute position.
-          • R vs U vs V  : nearly identical shape but differ in whether
-            adjacent finger vectors are parallel, spread, or crossed.
-          • W vs 6       : middle–ring spreading direction.
-        Distances alone cannot fully discriminate these because the spatial
-        relationship between vectors matters more than magnitude.
-
-    Group 9 — Palm Normal Vector (3 features)
-        The unit normal to the WRIST–INDEX_MCP–PINKY_MCP plane encodes
-        palm-facing direction (toward camera vs away vs sideways).
-          • B vs open-5  : same finger extension, different palm rotation.
-          • Any gesture pair that differs mainly by hand rotation.
-        This single 3-component vector is more compact and stable than any
-        rotation-angle decomposition.
-    ──────────────────────────────────────────────────────────────────────────
-
-    Feature layout:
-        [   0 –  81]  Groups 1–4 (v1 features)              82 values
-        [  82 –  91]  Group 5 — DIP curvature angles        10 values
-        [  92 – 101]  Group 6 — all fingertip pair dists    10 values
-        [ 102 – 103]  Group 7 — thumb position               2 values
-        [ 104 – 118]  Group 8 — finger direction vectors    15 values
-        [ 119 – 121]  Group 9 — palm normal vector           3 values
-        ─────────────────────────────────────────────────────────────
-        TOTAL                                              122 values
-
-    Args:
-        hand_landmarks: MediaPipe NormalizedLandmarkList (21 landmarks).
-
-    Returns:
-        numpy.ndarray shape (122,) dtype float32.
-
-    Raises:
-        ValueError: landmark count ≠ 21.
-    """
-    lm = hand_landmarks.landmark
-
-    if len(lm) != 21:
-        raise ValueError(f"Expected 21 landmarks, got {len(lm)}.")
-
-    # ── Groups 1–4: inherit all 82 v1 features ───────────────────────────────
-    # Delegating to the v1 function guarantees the two versions stay in sync —
-    # any future bug-fix in v1 automatically propagates to v2.
-    v1_features = extract_hand_features(hand_landmarks)   # shape (82,)
-
-    # ── Group 5: DIP Curvature Angles (10 features) ──────────────────────────
-    # Two angles per finger capturing the full curvature profile:
-    #   Angle A (MCP→PIP→DIP)  — upper segment bend
-    #   Angle B (PIP→DIP→TIP)  — lower / tip segment curl
-    #
-    # The thumb has no DIP joint; we use its two-segment equivalent:
-    #   Angle A (CMC→MCP→IP)
-    #   Angle B (MCP→IP→TIP)
-    #
-    # Order: [thumb_A, thumb_B,
-    #         index_A, index_B,
-    #         middle_A, middle_B,
-    #         ring_A, ring_B,
-    #         pinky_A, pinky_B]
-    dip_angles = [
-        # Thumb — two-segment curvature via CMC/MCP/IP/TIP
-        _joint_angle(lm[THUMB_CMC],  lm[THUMB_MCP], lm[THUMB_IP]),   # CMC→MCP→IP
-        _joint_angle(lm[THUMB_MCP],  lm[THUMB_IP],  lm[THUMB_TIP]),  # MCP→IP→TIP
-        # Index
-        _joint_angle(lm[INDEX_MCP],  lm[INDEX_PIP],  lm[INDEX_DIP]),   # upper
-        _joint_angle(lm[INDEX_PIP],  lm[INDEX_DIP],  lm[INDEX_TIP]),   # lower
-        # Middle
-        _joint_angle(lm[MIDDLE_MCP], lm[MIDDLE_PIP], lm[MIDDLE_DIP]),
-        _joint_angle(lm[MIDDLE_PIP], lm[MIDDLE_DIP], lm[MIDDLE_TIP]),
-        # Ring
-        _joint_angle(lm[RING_MCP],   lm[RING_PIP],   lm[RING_DIP]),
-        _joint_angle(lm[RING_PIP],   lm[RING_DIP],   lm[RING_TIP]),
-        # Pinky
-        _joint_angle(lm[PINKY_MCP],  lm[PINKY_PIP],  lm[PINKY_DIP]),
-        _joint_angle(lm[PINKY_PIP],  lm[PINKY_DIP],  lm[PINKY_TIP]),
-    ]
-    # len == 10
-
-    # ── Group 6: All Fingertip Pair Distances (10 features) ──────────────────
-    # Complete C(5,2) = 10 unique tip-to-tip distances.
-    # Iteration order: (0,1),(0,2),(0,3),(0,4),(1,2),(1,3),(1,4),(2,3),(2,4),(3,4)
-    # i.e.: thumb↔index, thumb↔middle, thumb↔ring, thumb↔pinky,
-    #       index↔middle, index↔ring,  index↔pinky,
-    #       middle↔ring,  middle↔pinky,
-    #       ring↔pinky
-    tips = [lm[THUMB_TIP], lm[INDEX_TIP], lm[MIDDLE_TIP],
-            lm[RING_TIP],  lm[PINKY_TIP]]
-    tip_pair_distances = [
-        _euclidean_distance(tips[i], tips[j])
-        for i in range(5)
-        for j in range(i + 1, 5)
-    ]
-    # len == 10
-
-    # ── Group 7: Thumb Position Features (2 features) ────────────────────────
-    # a) Thumb tip → palm centroid  (mean of the four finger MCPs)
-    # b) Thumb tip → index MCP
-    palm_cx = (lm[INDEX_MCP].x + lm[MIDDLE_MCP].x +
-               lm[RING_MCP].x  + lm[PINKY_MCP].x) / 4.0
-    palm_cy = (lm[INDEX_MCP].y + lm[MIDDLE_MCP].y +
-               lm[RING_MCP].y  + lm[PINKY_MCP].y) / 4.0
-    palm_cz = (lm[INDEX_MCP].z + lm[MIDDLE_MCP].z +
-               lm[RING_MCP].z  + lm[PINKY_MCP].z) / 4.0
-
-    thumb_position = [
-        float(np.sqrt((lm[THUMB_TIP].x - palm_cx) ** 2 +   # thumb → palm centre
-                      (lm[THUMB_TIP].y - palm_cy) ** 2 +
-                      (lm[THUMB_TIP].z - palm_cz) ** 2)),
-        _euclidean_distance(lm[THUMB_TIP], lm[INDEX_MCP]),  # thumb → index MCP
-    ]
-    # len == 2
-
-    # ── Group 8: Finger Direction Vectors (15 features) ──────────────────────
-    # Unit vector from each finger's MCP to its TIP: 5 fingers × 3 components.
-    # Encodes pointing direction independently of hand scale.
-    # Order: [thumb_dx, thumb_dy, thumb_dz,
-    #         index_dx, index_dy, index_dz,
-    #         middle_dx, ...,
-    #         ring_dx, ...,
-    #         pinky_dx, pinky_dy, pinky_dz]
-    finger_directions = []
-    for mcp_idx, tip_idx in [
-        (THUMB_MCP,  THUMB_TIP),
-        (INDEX_MCP,  INDEX_TIP),
-        (MIDDLE_MCP, MIDDLE_TIP),
-        (RING_MCP,   RING_TIP),
-        (PINKY_MCP,  PINKY_TIP),
-    ]:
-        finger_directions.extend(_unit_vec(lm[mcp_idx], lm[tip_idx]).tolist())
-    # len == 15
-
-    # ── Group 9: Palm Normal Vector (3 features) ──────────────────────────────
-    # Unit normal to the WRIST–INDEX_MCP–PINKY_MCP plane.
-    # Encodes palm-facing direction (toward / away from / sideways to camera).
-    palm_normal = _palm_normal_vec(lm).tolist()   # [nx, ny, nz]
-    # len == 3
-
-    # ── Concatenate all groups ────────────────────────────────────────────────
-    # Final order and lengths:
-    #   v1(82) + G5(10) + G6(10) + G7(2) + G8(15) + G9(3) = 122
-    feature_vector = np.concatenate([
-        v1_features,                                          # 82
-        np.array(dip_angles,         dtype=np.float32),      # 10
-        np.array(tip_pair_distances, dtype=np.float32),      # 10
-        np.array(thumb_position,     dtype=np.float32),      #  2
-        np.array(finger_directions,  dtype=np.float32),      # 15
-        np.array(palm_normal,        dtype=np.float32),      #  3
-    ])
-
-    assert feature_vector.shape == (TOTAL_FEATURES_V2,), (
-        f"v2 shape mismatch: expected ({TOTAL_FEATURES_V2},), "
-        f"got {feature_vector.shape}. "
-        "Update TOTAL_FEATURES_V2 if feature groups were intentionally changed."
-    )
-
-    return feature_vector
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# v2 — 126-feature standalone extraction
+# v2  —  134-feature standalone extraction
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Feature layout (126 total):
+# Feature layout (134 total):
 #   A. Normalised coordinates    63   indices   0 –  62
 #   B. Pairwise distances        20   indices  63 –  82
 #   C. Joint angles              20   indices  83 – 102
 #   D. Palm-relative distances   20   indices 103 – 122
 #   E. Shape descriptors          3   indices 123 – 125
+#   F. Discriminative features    8   indices 126 – 133
+#       F1: thumb→{index,middle,ring,pinky} tip distances  (4)
+#       F2: adjacent fingertip spread ×3                   (3)
+#       F3: index/middle crossing binary                   (1)
 #
 # Normalisation scheme
 # ────────────────────
@@ -453,48 +252,11 @@ def extract_hand_features_v2(hand_landmarks) -> np.ndarray:
 # largest sources of inter-subject variance.  Dividing by middle-MCP (rather
 # than e.g. bounding-box diagonal) is stable because the wrist→middle-MCP
 # segment is rigid and well-detected even in partial views.
-#
-# Group B — Pairwise distances (20)
-#   The 20 most discriminative tip-to-tip and tip-to-MCP pairs, all computed
-#   in the same normalised coordinate space so they are scale-invariant.
-#   Pairs:
-#     thumb_tip  ↔ {index,middle,ring,pinky}_tip          (4)
-#     index_tip  ↔ {middle,ring,pinky}_tip                (3)
-#     middle_tip ↔ {ring,pinky}_tip                       (2)
-#     ring_tip   ↔ pinky_tip                              (1)
-#     Each tip    ↔ wrist                                  (5)
-#     Each tip    ↔ middle_mcp                             (5)
-#   Total = 10 + 10 = 20
-#
-# Group C — Joint angles (20)
-#   PIP-joint angle (MCP→PIP→TIP) for each of the 4 fingers = 4
-#   DIP-joint angle (PIP→DIP→TIP) for each of the 4 fingers = 4
-#   Thumb: CMC→MCP→IP and MCP→IP→TIP                      = 2
-#   MCP knuckle spread: angle at MCP between adjacent fingers (wrist→MCP→next_MCP)
-#     index, middle, ring, pinky = 4 angles
-#   Wrist fan: angle at wrist between outer-most MCPs (index_mcp–wrist–pinky_mcp) = 1
-#   Inter-finger tip triangles: angle at each tip between its two neighbouring tips
-#     (index, middle, ring flanked by immediate neighbours)               = 5
-#   Total = 4+4+2+4+1+5 = 20
-#
-# Group D — Palm-relative distances (20)
-#   For each of the 5 fingers, distance from each of its 4 joints
-#   (MCP, PIP/IP, DIP, TIP) to the palm centroid (mean of 4 finger MCPs).
-#   5 fingers × 4 joints = 20, all in normalised space.
-#
-# Group E — Shape descriptors (3)
-#   1. Palm aspect ratio: width (index_mcp → pinky_mcp) / height (wrist → middle_mcp)
-#   2. Finger extension ratio: mean tip-to-palm-centroid distance / hand scale
-#   3. Palm normal Z-component: sign encodes whether the palm faces the camera
-#      (positive) or away (negative) — compact single scalar from the cross-product.
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Total feature count for this standalone v2 function
-# A(63) + B(20) + C(20) + D(20) + E(3) + F(8) = 134
-_V2_STANDALONE_FEATURES = 134
 
 
 def extract_hand_features_v2(hand_landmarks) -> np.ndarray | None:
+
     """
     Convert MediaPipe Hands landmarks into a 134-dimensional feature vector.
 
@@ -781,7 +543,7 @@ def extract_hand_features_v2(hand_landmarks) -> np.ndarray | None:
                                          group_d, group_e, group_f])
 
         # Runtime shape assertion — fires immediately if any group count drifts.
-        if feature_vector.shape[0] != _V2_STANDALONE_FEATURES:
+        if feature_vector.shape[0] != TOTAL_FEATURES_V2:
             return None   # never reached with correct code; guard for safety
 
         return feature_vector.astype(np.float32)

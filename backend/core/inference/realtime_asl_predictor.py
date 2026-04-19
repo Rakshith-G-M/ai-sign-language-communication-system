@@ -36,8 +36,8 @@ import joblib
 import numpy as np
 import mediapipe as mp
 
-from src.ml.feature_engineering import extract_hand_features_v2, TOTAL_FEATURES_V2
-from src.inference.text_builder import TextBuilder   # ← ADDED
+from core.ml.feature_engineering import extract_hand_features_v2, TOTAL_FEATURES_V2
+from core.inference.text_builder import TextBuilder   # ← ADDED
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -52,15 +52,16 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
-MODEL_PATH   = Path("models/asl_xgboost.pkl")
-ENCODER_PATH = Path("models/label_encoder.pkl")
+_BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
+MODEL_PATH   = _BASE_DIR / "models" / "asl_xgboost.pkl"
+ENCODER_PATH = _BASE_DIR / "models" / "label_encoder.pkl"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tunable constants
 # ─────────────────────────────────────────────────────────────────────────────
 # Rolling window: 10 frames @ ~30 fps ≈ 0.33 s of history.
 # Lower → faster sign transitions; higher → more stable display.
-BUFFER_SIZE = 7
+BUFFER_SIZE = 12
 
 # Minimum predict_proba score for a prediction to enter the buffer.
 # Frames below this are silently dropped — the last stable result stays shown.
@@ -73,7 +74,11 @@ CONFIDENCE_THRESHOLD = 0.55
 #   buffer   → filters single-frame noise     (short timescale)
 #   hysteresis → filters sustained flickering (longer timescale)
 # Tuning: 3 = responsive, 4 = recommended, 5–6 = very locked-in
-STABILITY_THRESHOLD = 4
+STABILITY_THRESHOLD = 5
+
+# Grace period: Number of consecutive frames to wait when a hand is missing
+# before resetting the stability state. Prevents flickering issues.
+HAND_MISSING_THRESHOLD = 6
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Overlay style
@@ -407,17 +412,19 @@ def _init_predict_frame_state():
     """Load model artefacts and build all module-level state for predict_frame()."""
     global _pf_model, _pf_encoder, _pf_buffer
     global _pf_candidate, _pf_stability, _pf_stable, _pf_hands
+    global _pf_hand_missing_counter
 
     _pf_model, _pf_encoder = load_model_artefacts()
     _pf_buffer    = deque(maxlen=BUFFER_SIZE)
     _pf_candidate = None
     _pf_stability = 0
     _pf_stable    = None
+    _pf_hand_missing_counter = 0
     _pf_hands     = MP_HANDS.Hands(
-        static_image_mode=False,
+        static_image_mode=True,
         max_num_hands=1,
         min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+        min_tracking_confidence=0.7,
     )
     log.info("predict_frame() state initialised.")
 
@@ -470,6 +477,7 @@ def predict_frame(
         hand_detected   : bool       — True if MediaPipe found a hand.
     """
     global _pf_buffer, _pf_candidate, _pf_stability, _pf_stable
+    global _pf_hand_missing_counter
 
     # ── BGR → RGB ─────────────────────────────────────────────────────────────
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -480,6 +488,9 @@ def predict_frame(
     hand_detected = results.multi_hand_landmarks is not None
 
     if hand_detected:
+        # Reset the missing counter since we found a hand
+        _pf_hand_missing_counter = 0
+        
         hand_landmarks = results.multi_hand_landmarks[0]
 
         # Handedness (optional — None treated as Right, no x-flip)
@@ -521,11 +532,20 @@ def predict_frame(
             _pf_stable = _pf_candidate
 
     else:
-        # No hand — reset all three layers for a clean start on next sign
-        _pf_buffer.clear()
-        _pf_candidate = None
-        _pf_stability = 0
-        _pf_stable    = None
+        # ── GRACE PERIOD LOGIC ────────────────────────────────────────────────
+        # Instead of resetting immediately, we increment a counter. 
+        # Only after HAND_MISSING_THRESHOLD consecutive missing frames 
+        # do we actually wipe the stability layers.
+        _pf_hand_missing_counter += 1
+        
+        if _pf_hand_missing_counter >= HAND_MISSING_THRESHOLD:
+            _pf_buffer.clear()
+            _pf_candidate = None
+            _pf_stability = 0
+            _pf_stable    = None
+            # Log only once on reset to avoid spam
+            if _pf_hand_missing_counter == HAND_MISSING_THRESHOLD:
+                log.debug("Hand missing threshold reached. Resetting prediction state.")
 
     # ── Overlay ───────────────────────────────────────────────────────────────
     draw_prediction_overlay(frame, _pf_stable)
