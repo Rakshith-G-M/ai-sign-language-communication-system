@@ -1,17 +1,17 @@
 """
 train_dynamic_gesture.py
 ─────────────────────────
-Trains an LSTM classifier on the dynamic gesture landmark dataset
-produced by generate_dynamic_dataset.py, then exports to ONNX.
+Trains an LSTM classifier on the canonical dynamic gesture dataset
+produced by preprocess_wlasl_dynamic.py, then exports to ONNX.
 
 Pipeline
 ────────
     1. Load      →  dataset/dynamic_gestures.jsonl
-    2. Validate  →  each sequence is SEQUENCE_LENGTH × 63 floats
+    2. Validate  →  each sequence is SEQUENCE_LENGTH × TOTAL_FEATURES_V2 floats
     3. Encode    →  LabelEncoder  (class strings → integers)
     4. Split     →  stratified 80/20 train-test  (random_state=42)
     5. Normalise →  per-feature StandardScaler fitted on training data
-    6. Train     →  LSTM(input=63, hidden=128, layers=2, classes=N)
+    6. Train     →  LSTM(input=TOTAL_FEATURES_V2, hidden=128, layers=2, classes=N)
     7. Evaluate  →  accuracy + per-class report on test set
     8. Export    →  models/asl_dynamic.onnx  (ONNX opset 11)
                     models/dynamic_label_encoder.pkl
@@ -46,6 +46,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import accuracy_score, classification_report
 
+# Allow running directly from backend/core/ml or from the backend package root.
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.append(str(BACKEND_ROOT))
+
+from core.ml.feature_engineering import TOTAL_FEATURES_V2
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
@@ -65,8 +72,8 @@ ONNX_FILENAME     = "asl_dynamic.onnx"
 ENCODER_FILENAME  = "dynamic_label_encoder.pkl"
 SCALER_FILENAME   = "dynamic_scaler.pkl"
 
-SEQUENCE_LENGTH = 30    # must match SEQUENCE_LENGTH in generate_dynamic_dataset.py
-INPUT_SIZE      = 63    # 21 landmarks × 3 coords
+SEQUENCE_LENGTH = 30    # canonical dynamic sequence length
+INPUT_SIZE      = TOTAL_FEATURES_V2    # canonical engineered v2 feature count
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -77,14 +84,14 @@ def load_dataset(jsonl_path: str) -> tuple[np.ndarray, np.ndarray]:
     Load the JSONL dataset into NumPy arrays.
 
     Returns:
-        X : float32 array of shape (n_samples, SEQUENCE_LENGTH, INPUT_SIZE)
+        X : float32 array of shape (n_samples, SEQUENCE_LENGTH, TOTAL_FEATURES_V2)
         y : string array of shape  (n_samples,)
     """
     path = Path(jsonl_path)
     if not path.exists():
         raise FileNotFoundError(
             f"Dataset not found: {path.resolve()}\n"
-            "Run generate_dynamic_dataset.py first."
+            "Run preprocess_wlasl_dynamic.py to generate the canonical 134-D dataset."
         )
 
     sequences, labels = [], []
@@ -101,25 +108,45 @@ def load_dataset(jsonl_path: str) -> tuple[np.ndarray, np.ndarray]:
                 log.warning("Skipping malformed line %d: %s", line_no, exc)
                 continue
 
-            if len(frames) < SEQUENCE_LENGTH:
-                log.warning("Skipping short sequence (%d frames) on line %d",
-                            len(frames), line_no)
+            if not isinstance(label, str) or not label.strip():
+                log.warning("Skipping line %d: missing or empty label", line_no)
                 continue
 
-            # Truncate to fixed length
-            seq = np.array(frames[:SEQUENCE_LENGTH], dtype=np.float32)  # (T, 63)
-
-            if seq.shape != (SEQUENCE_LENGTH, INPUT_SIZE):
-                log.warning("Unexpected shape %s on line %d — skipping", seq.shape, line_no)
+            try:
+                seq = np.array(frames, dtype=np.float32)
+            except (TypeError, ValueError) as exc:
+                log.warning("Skipping line %d: frames must be numeric (%s)", line_no, exc)
                 continue
+
+            expected_shape = (SEQUENCE_LENGTH, INPUT_SIZE)
+            if seq.shape != expected_shape:
+                if seq.ndim == 2 and seq.shape[1] == 63:
+                    raise ValueError(
+                        "Legacy 63-dimensional dynamic dataset detected on "
+                        f"line {line_no}. The canonical dynamic dataset format is "
+                        f"(sequence_length={SEQUENCE_LENGTH}, "
+                        f"feature_dim={TOTAL_FEATURES_V2}). Regenerate the dataset "
+                        "with preprocess_wlasl_dynamic.py before training."
+                    )
+                raise ValueError(
+                    f"Invalid dynamic dataset shape on line {line_no}: got {seq.shape}, "
+                    f"expected {expected_shape}. Regenerate the dataset with "
+                    "preprocess_wlasl_dynamic.py."
+                )
+
+            if not np.isfinite(seq).all():
+                raise ValueError(
+                    f"Invalid dynamic dataset on line {line_no}: sequence contains NaN "
+                    "or infinite values. Regenerate or clean the dataset."
+                )
 
             sequences.append(seq)
-            labels.append(label)
+            labels.append(label.strip())
 
     if not sequences:
         raise ValueError("No valid sequences found in dataset.")
 
-    X = np.stack(sequences, axis=0)   # (N, T, 63)
+    X = np.stack(sequences, axis=0)   # (N, T, TOTAL_FEATURES_V2)
     y = np.array(labels)              # (N,)
     log.info("Loaded %d sequences across %d classes.", len(X), len(np.unique(y)))
     return X, y
