@@ -48,6 +48,8 @@ MediaPipe Landmark Index Reference:
 
 import numpy as np
 
+from core.ml.constants import TOTAL_FEATURES_V2
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Landmark index constants — single source of truth
@@ -60,10 +62,8 @@ MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP =  9, 10, 11, 12
 RING_MCP,   RING_PIP,   RING_DIP,   RING_TIP   = 13, 14, 15, 16
 PINKY_MCP,  PINKY_PIP,  PINKY_DIP,  PINKY_TIP  = 17, 18, 19, 20
 
-# Feature-count constants — import these in every consumer script so that a
-# single edit here propagates everywhere automatically.
-TOTAL_FEATURES    = 82    # v1
-TOTAL_FEATURES_V2 = 134   # v2  (126 base + 8 discriminative: F_thumb×4 + F_spread×3 + F_cross×1)
+# Feature-count constants — v1 kept for backward compatibility with legacy models.
+TOTAL_FEATURES = 82    # v1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -552,3 +552,18 @@ def extract_hand_features_v2(hand_landmarks) -> np.ndarray | None:
         # Return None on any unexpected error so the caller can skip the frame
         # without crashing — critical for real-time robustness.
         return None
+
+
+def validate_feature_vector_v2(feature_vector: np.ndarray, *, context: str = "Feature vector") -> None:
+    """
+    Validate a v2 feature vector shape and numeric integrity.
+
+    Raises:
+        ValueError: When shape ≠ (TOTAL_FEATURES_V2,) or values are non-finite.
+    """
+    if feature_vector.shape != (TOTAL_FEATURES_V2,):
+        raise ValueError(
+            f"{context}: expected shape ({TOTAL_FEATURES_V2},), got {feature_vector.shape}."
+        )
+    if not np.isfinite(feature_vector).all():
+        raise ValueError(f"{context}: contains NaN or infinite values.")

@@ -412,6 +412,21 @@ _pf_model = None
 _pf_encoder = None
 _pf_hands = None
 _fallback_session = None
+_pf_init_error: str | None = None
+
+def is_static_predictor_ready() -> bool:
+    """Return True when static model artefacts and MediaPipe are initialised."""
+    return _pf_model is not None and _pf_encoder is not None and _pf_hands is not None
+
+
+def shutdown_static_predictor() -> None:
+    """Release MediaPipe resources during application shutdown."""
+    global _pf_hands
+    if _pf_hands is not None:
+        _pf_hands.close()
+        _pf_hands = None
+        log.info("MediaPipe Hands context closed.")
+
 
 def _init_predict_frame_state():
     """Load model artefacts and build all module-level state for predict_frame()."""
@@ -431,6 +446,7 @@ def _init_predict_frame_state():
 try:
     _init_predict_frame_state()
 except FileNotFoundError as _pf_init_err:
+    _pf_init_error = str(_pf_init_err)
     log.warning("predict_frame() state NOT initialised: %s", _pf_init_err)
 
 
@@ -477,6 +493,10 @@ def predict_frame(
         hand_detected   : bool       — True if MediaPipe found a hand.
     """
     global _fallback_session
+
+    if not is_static_predictor_ready():
+        log.warning("predict_frame called but static predictor is not initialised")
+        return frame, None, False
 
     if session is None:
         if _fallback_session is None:

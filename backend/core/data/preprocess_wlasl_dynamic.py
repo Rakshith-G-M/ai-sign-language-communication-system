@@ -19,9 +19,9 @@ where frames is exactly SEQUENCE_LENGTH × TOTAL_FEATURES_V2.
 
 Example
 ───────
-    python preprocess_wlasl_dynamic.py \
-        --metadata /data/WLASL/WLASL_v0.3.json \
-        --videos_dir /data/WLASL/videos \
+    python -m core.data.preprocess_wlasl_dynamic \\
+        --metadata /data/WLASL/WLASL_v0.3.json \\
+        --videos_dir /data/WLASL/videos \\
         --output dataset/dynamic_gestures.jsonl
 """
 
@@ -39,15 +39,19 @@ from typing import Iterable, Sequence
 import cv2
 import mediapipe as mp
 import numpy as np
-from mediapipe.framework.formats import landmark_pb2
 
-# Allow the script to run both as a module and directly from this directory.
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.append(str(BACKEND_ROOT))
 
-from core.ml.feature_engineering import TOTAL_FEATURES_V2, extract_hand_features_v2
-
+from core.ml.constants import RANDOM_SEED, SEQUENCE_LENGTH, TOTAL_FEATURES_V2
+from core.ml.dataset_validation import (
+    report_class_distribution,
+    validate_dynamic_jsonl,
+    validate_dynamic_sequence,
+)
+from core.ml.landmark_utils import extract_v2_features_from_results, zero_feature_frame
+from core.ml.training_utils import set_deterministic_seeds
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,11 +60,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-
 MP_HANDS = mp.solutions.hands
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm")
-DEFAULT_SEQUENCE_LENGTH = 30
-ZERO_FRAME = [0.0] * TOTAL_FEATURES_V2
+ZERO_FRAME = zero_feature_frame()
 
 
 @dataclass(frozen=True)
@@ -80,12 +82,7 @@ def _normalise_split_filter(splits: Sequence[str] | None) -> set[str] | None:
 
 
 def load_wlasl_instances(metadata_path: Path, splits: Sequence[str] | None = None) -> list[WlaslInstance]:
-    """
-    Load WLASL metadata and return video instances.
-
-    The expected WLASL format is a JSON list of entries containing a ``gloss``
-    label and an ``instances`` list with ``video_id`` plus optional ``split``.
-    """
+    """Load WLASL metadata and return video instances."""
     split_filter = _normalise_split_filter(splits)
 
     try:
@@ -98,6 +95,9 @@ def load_wlasl_instances(metadata_path: Path, splits: Sequence[str] | None = Non
         raise ValueError("WLASL metadata must be a JSON list of gloss entries.")
 
     instances: list[WlaslInstance] = []
+    duplicate_video_ids: list[str] = []
+    seen_video_ids: set[str] = set()
+
     for entry_index, entry in enumerate(metadata, start=1):
         if not isinstance(entry, dict):
             log.warning("Skipping metadata entry %d: expected object.", entry_index)
@@ -119,10 +119,22 @@ def load_wlasl_instances(metadata_path: Path, splits: Sequence[str] | None = Non
 
             if not video_id:
                 continue
+            if video_id in seen_video_ids:
+                duplicate_video_ids.append(video_id)
+            seen_video_ids.add(video_id)
+
             if split_filter is not None and split_text not in split_filter:
                 continue
 
             instances.append(WlaslInstance(video_id=video_id, label=label, split=split_text))
+
+    if duplicate_video_ids:
+        log.warning(
+            "Duplicate video_id entries in metadata: %d occurrence(s) "
+            "(examples: %s). Later entries are still processed.",
+            len(duplicate_video_ids),
+            sorted(set(duplicate_video_ids))[:5],
+        )
 
     if not instances:
         raise ValueError("No WLASL instances matched the provided metadata and split filter.")
@@ -132,7 +144,7 @@ def load_wlasl_instances(metadata_path: Path, splits: Sequence[str] | None = Non
 
 
 def build_video_index(videos_dir: Path) -> dict[str, Path]:
-    """Index video files under ``videos_dir`` by stem for fast video_id lookup."""
+    """Index video files under videos_dir by stem for fast video_id lookup."""
     if not videos_dir.exists():
         raise FileNotFoundError(f"Videos directory not found: {videos_dir}")
     if not videos_dir.is_dir():
@@ -148,47 +160,6 @@ def build_video_index(videos_dir: Path) -> dict[str, Path]:
 
     log.info("Indexed %d video files under %s.", len(index), videos_dir)
     return index
-
-
-def _copy_landmarks_with_x_flip(hand_landmarks) -> landmark_pb2.NormalizedLandmarkList:
-    """
-    Return a copy of landmarks mirrored on X for left-hand canonicalization.
-
-    This keeps feature extraction centralized in ``extract_hand_features_v2`` by
-    transforming only the MediaPipe landmark object before calling it.
-    """
-    mirrored = landmark_pb2.NormalizedLandmarkList()
-    for landmark in hand_landmarks.landmark:
-        copied = mirrored.landmark.add()
-        copied.x = 1.0 - landmark.x
-        copied.y = landmark.y
-        copied.z = landmark.z
-        copied.visibility = landmark.visibility
-        copied.presence = landmark.presence
-    return mirrored
-
-
-def _handedness_label(results) -> str | None:
-    """Extract MediaPipe handedness label for the first detected hand."""
-    if not results.multi_handedness:
-        return None
-
-    try:
-        classification = results.multi_handedness[0].classification[0]
-    except (IndexError, AttributeError):
-        return None
-    return classification.label or None
-
-
-def orientation_normalized_landmarks(results):
-    """Return first-hand landmarks normalized to the canonical right-hand orientation."""
-    if not results.multi_hand_landmarks:
-        return None
-
-    hand_landmarks = results.multi_hand_landmarks[0]
-    if _handedness_label(results) == "Left":
-        return _copy_landmarks_with_x_flip(hand_landmarks)
-    return hand_landmarks
 
 
 def sample_or_pad_sequence(frames: Sequence[Sequence[float]], sequence_length: int) -> list[list[float]]:
@@ -207,16 +178,6 @@ def sample_or_pad_sequence(frames: Sequence[Sequence[float]], sequence_length: i
     return padded
 
 
-def validate_processed_sequence(sequence: Sequence[Sequence[float]], sequence_length: int) -> None:
-    """Validate canonical dynamic dataset shape and numeric integrity."""
-    array = np.asarray(sequence, dtype=np.float32)
-    expected_shape = (sequence_length, TOTAL_FEATURES_V2)
-    if array.shape != expected_shape:
-        raise ValueError(f"Expected sequence shape {expected_shape}, got {array.shape}.")
-    if not np.isfinite(array).all():
-        raise ValueError("Sequence contains NaN or infinite feature values.")
-
-
 def extract_video_features(
     video_path: Path,
     hands: mp.solutions.hands.Hands,
@@ -229,46 +190,53 @@ def extract_video_features(
         return None
 
     extracted_frames: list[list[float]] = []
+    frame_errors = 0
+
     try:
         while True:
             ok, frame = capture.read()
             if not ok:
                 break
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if frame is None or frame.size == 0:
+                frame_errors += 1
+                continue
+
+            try:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            except cv2.error:
+                frame_errors += 1
+                log.warning("Skipping unreadable frame in %s.", video_path)
+                continue
+
             rgb.flags.writeable = False
             results = hands.process(rgb)
             rgb.flags.writeable = True
 
-            landmarks = orientation_normalized_landmarks(results)
-            if landmarks is None:
-                continue
-
-            features = extract_hand_features_v2(landmarks)
+            features = extract_v2_features_from_results(results)
             if features is None:
                 continue
+
             if features.shape != (TOTAL_FEATURES_V2,):
                 log.warning(
                     "Skipping frame in %s: expected %d features, got %s.",
-                    video_path,
-                    TOTAL_FEATURES_V2,
-                    features.shape,
+                    video_path, TOTAL_FEATURES_V2, features.shape,
                 )
-                continue
-            if not np.isfinite(features).all():
-                log.warning("Skipping frame in %s: non-finite features.", video_path)
                 continue
 
             extracted_frames.append(features.astype(np.float32).tolist())
     finally:
         capture.release()
 
+    if frame_errors:
+        log.debug("%s: skipped %d corrupted frame(s).", video_path.name, frame_errors)
+
     if not extracted_frames:
         log.warning("Skipping %s: no usable hand frames detected.", video_path)
         return None
 
     sequence = sample_or_pad_sequence(extracted_frames, sequence_length)
-    validate_processed_sequence(sequence, sequence_length)
+    validate_dynamic_sequence(sequence, sequence_length=sequence_length)
     return sequence
 
 
@@ -321,11 +289,21 @@ def write_records(
 
     log.info(
         "Done. Wrote %d samples to %s. Missing videos: %d. Failed videos: %d.",
-        written,
-        output_path,
-        skipped_missing,
-        skipped_failed,
+        written, output_path, skipped_missing, skipped_failed,
     )
+
+    if written > 0:
+        labels_written = [
+            label for label, count in per_class_counts.items() for _ in range(count)
+        ]
+        report_class_distribution(labels_written, title="Written WLASL samples")
+        if not append or output_path.exists():
+            try:
+                validate_dynamic_jsonl(output_path, min_samples_per_class=1)
+                log.info("Output integrity check passed for %s.", output_path)
+            except ValueError as exc:
+                log.warning("Post-write validation warning: %s", exc)
+
     return written
 
 
@@ -339,7 +317,7 @@ def _positive_int(value: str) -> int:
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Preprocess WLASL videos into canonical 134-D dynamic gesture JSONL."
+        description=f"Preprocess WLASL videos into canonical {TOTAL_FEATURES_V2}-D dynamic JSONL."
     )
     parser.add_argument("--metadata", required=True, type=Path, help="Path to WLASL_v*.json metadata.")
     parser.add_argument("--videos_dir", required=True, type=Path, help="Directory containing WLASL video files.")
@@ -351,9 +329,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sequence_length",
-        default=DEFAULT_SEQUENCE_LENGTH,
+        default=SEQUENCE_LENGTH,
         type=_positive_int,
-        help=f"Frames per sample after sampling/padding (default: {DEFAULT_SEQUENCE_LENGTH}).",
+        help=f"Frames per sample after sampling/padding (default: {SEQUENCE_LENGTH}).",
     )
     parser.add_argument(
         "--split",
@@ -370,12 +348,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--append", action="store_true", help="Append to output instead of overwriting.")
     parser.add_argument("--min_detection_confidence", type=float, default=0.5)
     parser.add_argument("--min_tracking_confidence", type=float, default=0.5)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=RANDOM_SEED,
+        help=f"Random seed (default: {RANDOM_SEED}).",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     """CLI entry point."""
     args = parse_args()
+    set_deterministic_seeds(args.seed)
+
     try:
         instances = load_wlasl_instances(args.metadata, args.splits)
         video_index = build_video_index(args.videos_dir)

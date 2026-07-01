@@ -12,9 +12,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=info
+      - CORS_ORIGINS=*
+      - PROJECT_ROOT=/app
     volumes:
       - ./models:/app/models
-      - ./src:/app/src
+      - ./dataset:/app/dataset
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
@@ -32,7 +34,7 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - VITE_API_BASE=http://backend:8000
+      - VITE_API_BASE=http://localhost:8000
     depends_on:
       - backend
     restart: unless-stopped

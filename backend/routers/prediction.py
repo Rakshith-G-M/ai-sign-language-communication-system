@@ -5,147 +5,165 @@ Prediction Router
 Handles API endpoints for ASL prediction and state management.
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Response
-from pydantic import BaseModel
+from __future__ import annotations
+
 import logging
 import time
-import edge_tts
 
-# Import service (updated path)
+import edge_tts
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+
+from core.config import settings
+from core.dependencies import get_prediction_service
+from schemas.prediction import (
+    Base64Request,
+    PredictionResponse,
+    ResetResponse,
+    StateResponse,
+    TTSRequest,
+)
 from services.prediction_service import ASLPredictionService
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Setup
-# ─────────────────────────────────────────────────────────────────────────────
 router = APIRouter(prefix="/api/v1", tags=["prediction"])
 log = logging.getLogger(__name__)
 
-# Initialize service (singleton for now)
-prediction_service = ASLPredictionService()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Schemas
-# ─────────────────────────────────────────────────────────────────────────────
-class PredictionResponse(BaseModel):
-    letter: str | None
-    confidence: float
-    word: str
-    sentence: str
-    suggestions: list[str] = []  # ✨ New field
-    finalized_sentence: str | None
-    hand_detected: bool
-    latency: float
+_ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
-class Base64Request(BaseModel):
-    image: str
-
-class TTSRequest(BaseModel):
-    text: str
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Endpoints
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/tts")
-async def generate_tts(request: TTSRequest):
-    """
-    Generate speech dynamically via edge-tts. Runs async to prevent blocking pipeline.
-    """
+@router.post(
+    "/tts",
+    summary="Generate text-to-speech audio",
+    response_class=Response,
+    responses={
+        200: {"content": {"audio/mpeg": {}}, "description": "MP3 audio bytes."},
+        400: {"description": "Empty or invalid text."},
+        500: {"description": "Speech generation failed."},
+    },
+)
+async def generate_tts(request: TTSRequest) -> Response:
+    """Generate speech dynamically via edge-tts."""
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Empty text")
-        
+
     try:
-        communicate = edge_tts.Communicate(request.text, "en-US-AriaNeural")
+        communicate = edge_tts.Communicate(request.text.strip(), "en-US-AriaNeural")
         audio_data = bytearray()
-        
+
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 audio_data.extend(chunk["data"])
-                
-        return Response(content=bytes(audio_data), media_type="audio/mp3")
-    except Exception as exc:
-        log.error(f"TTS Engine Error: {exc}")
-        raise HTTPException(status_code=500, detail="Speech generation failed")
 
-@router.post("/predict", response_model=PredictionResponse)
-async def predict(file: UploadFile = File(...), session_id: str | None = None):
-    """
-    Predict ASL letter from uploaded image frame.
-    """
+        if not audio_data:
+            raise HTTPException(status_code=502, detail="No audio generated")
+
+        return Response(content=bytes(audio_data), media_type="audio/mpeg")
+    except Exception as exc:
+        log.error("TTS engine error: %s", exc)
+        raise HTTPException(status_code=500, detail="Speech generation failed") from exc
+
+
+@router.post(
+    "/predict",
+    response_model=PredictionResponse,
+    summary="Predict ASL letter from uploaded image",
+)
+async def predict(
+    file: UploadFile = File(..., description="JPEG, PNG, or WebP image frame."),
+    session_id: str | None = None,
+    service: ASLPredictionService = Depends(get_prediction_service),
+) -> dict:
+    """Predict ASL letter from an uploaded image frame."""
     start_time = time.time()
 
-    # ✅ File type validation
-    if file.content_type not in ["image/jpeg", "image/png", "image/webp"]:
+    content_type = file.content_type or ""
+    if content_type not in _ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=400, detail="Invalid file type")
 
     try:
         contents = await file.read()
+        if len(contents) > settings.max_upload_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded file exceeds size limit")
 
-        result = prediction_service.predict_from_bytes(contents, start_time, session_id=session_id)
-        return result
-
+        return service.predict_from_bytes(contents, start_time, session_id=session_id)
+    except HTTPException:
+        raise
     except Exception as exc:
-        log.error(f"Prediction error: {exc}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        log.error("Prediction error: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
-@router.post("/predict-base64", response_model=PredictionResponse)
-async def predict_base64(request: Base64Request, session_id: str | None = None):
-    """
-    Predict ASL letter from base64 image.
-    """
+@router.post(
+    "/predict-base64",
+    response_model=PredictionResponse,
+    summary="Predict ASL letter from base64 image",
+)
+async def predict_base64(
+    request: Base64Request,
+    session_id: str | None = None,
+    service: ASLPredictionService = Depends(get_prediction_service),
+) -> dict:
+    """Predict ASL letter from a base64-encoded image."""
     start_time = time.time()
 
     try:
-        result = prediction_service.predict_from_base64(
+        return service.predict_from_base64(
             request.image, start_time, session_id=session_id
         )
-        return result
-
     except Exception as exc:
-        log.error(f"Base64 prediction error: {exc}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        log.error("Base64 prediction error: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
-@router.post("/reset")
-async def reset(session_id: str | None = None):
-    """
-    Reset word and sentence state.
-    """
-    prediction_service.reset(session_id=session_id)
+@router.post(
+    "/reset",
+    response_model=ResetResponse,
+    summary="Reset word and sentence state",
+)
+async def reset(
+    session_id: str | None = None,
+    service: ASLPredictionService = Depends(get_prediction_service),
+) -> dict:
+    """Reset word and sentence state for the given session."""
+    service.reset(session_id=session_id)
     return {"status": "reset successful"}
 
 
-@router.get("/state")
-async def get_state(session_id: str | None = None):
-    """
-    Get current word and sentence state.
-    """
-    return prediction_service.get_state(session_id=session_id)
+@router.get(
+    "/state",
+    response_model=StateResponse,
+    summary="Get current word and sentence state",
+)
+async def get_state(
+    session_id: str | None = None,
+    service: ASLPredictionService = Depends(get_prediction_service),
+) -> dict:
+    """Return the current word and sentence for the given session."""
+    return service.get_state(session_id=session_id)
 
 
-@router.get("/health")
-async def health():
-    """
-    Health check endpoint.
-    """
+@router.get(
+    "/health",
+    summary="Liveness health check (legacy)",
+    description="Returns ok when the process is running. Preserved for frontend compatibility.",
+)
+async def health() -> dict:
+    """Health check endpoint — always returns ok when the process is alive."""
     return {"status": "ok"}
 
 
-@router.get("/info")
-async def info():
-    """
-    Service metadata.
-    """
+@router.get("/info", summary="Service metadata")
+async def info() -> dict:
+    """Return service metadata and available endpoints."""
     return {
         "service": "ASL Recognition Engine",
-        "version": "1.0.0",
+        "version": settings.api_version,
         "endpoints": [
             "/predict",
             "/predict-base64",
             "/reset",
             "/state",
             "/health",
+            "/info",
+            "/tts",
         ],
     }

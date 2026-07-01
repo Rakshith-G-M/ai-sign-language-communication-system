@@ -19,51 +19,29 @@ Endpoints
         Removes all samples for a given label from the dataset.
 """
 
+from __future__ import annotations
+
 import json
 import logging
-from pathlib import Path
 from collections import Counter
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator
+
+from core.config import settings
+from schemas.data_collection import (
+    ClearLabelResponse,
+    CollectStatsResponse,
+    SequenceRequest,
+    SequenceSavedResponse,
+)
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/collect", tags=["data-collection"])
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Dataset path — same file that train_dynamic_gesture.py reads
-# ─────────────────────────────────────────────────────────────────────────────
-_BASE_DIR    = Path(__file__).resolve().parent.parent.parent.parent
-DATASET_PATH = _BASE_DIR / "dataset" / "dynamic_gestures.jsonl"
 
-SEQUENCE_LENGTH = 30
-INPUT_SIZE      = 63
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Schemas
-# ─────────────────────────────────────────────────────────────────────────────
-class SequenceRequest(BaseModel):
-    label:  str
-    frames: list[list[float]]   # shape: (N, 63) — N can vary; we truncate/pad
-
-    @field_validator("label")
-    @classmethod
-    def label_must_be_nonempty(cls, v: str) -> str:
-        v = v.strip().upper()
-        if not v:
-            raise ValueError("label must be a non-empty string")
-        return v
-
-    @field_validator("frames")
-    @classmethod
-    def frames_must_have_correct_width(cls, v: list[list[float]]) -> list[list[float]]:
-        for i, frame in enumerate(v):
-            if len(frame) != INPUT_SIZE:
-                raise ValueError(
-                    f"frame[{i}] has {len(frame)} values; expected {INPUT_SIZE} (21 × 3)"
-                )
-        return v
+def _dataset_path():
+    return settings.dynamic_dataset_path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,10 +49,11 @@ class SequenceRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 def _load_all_records() -> list[dict]:
     """Read JSONL into a list of dicts.  Returns [] if file absent."""
-    if not DATASET_PATH.exists():
+    path = _dataset_path()
+    if not path.exists():
         return []
     records = []
-    with open(DATASET_PATH, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -87,67 +66,86 @@ def _load_all_records() -> list[dict]:
 
 def _write_all_records(records: list[dict]) -> None:
     """Rewrite the whole JSONL file from a list of dicts."""
-    DATASET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(DATASET_PATH, "w", encoding="utf-8") as f:
+    path = _dataset_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r) + "\n")
 
 
 def _pad_or_truncate(frames: list[list[float]]) -> list[list[float]]:
     """Ensure the sequence is exactly SEQUENCE_LENGTH frames long."""
-    if len(frames) >= SEQUENCE_LENGTH:
-        return frames[-SEQUENCE_LENGTH:]
-    # Left-pad with zero frames
-    padding = [[0.0] * INPUT_SIZE] * (SEQUENCE_LENGTH - len(frames))
+    seq_len = settings.collect_sequence_length
+    input_size = settings.collect_input_size
+    if len(frames) >= seq_len:
+        return frames[-seq_len:]
+    padding = [[0.0] * input_size] * (seq_len - len(frames))
     return padding + frames
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
-@router.post("/sequence", status_code=201)
-async def save_sequence(request: SequenceRequest):
+@router.post(
+    "/sequence",
+    status_code=201,
+    response_model=SequenceSavedResponse,
+    summary="Save a dynamic gesture sequence",
+)
+async def save_sequence(request: SequenceRequest) -> dict:
     """
     Accept a single dynamic gesture sequence from the frontend and append
     it to the JSONL dataset file.
     """
-    if len(request.frames) < 5:
+    if len(request.frames) < settings.collect_min_frames:
         raise HTTPException(
             status_code=400,
-            detail=f"Sequence too short ({len(request.frames)} frames). Minimum 5 required.",
+            detail=(
+                f"Sequence too short ({len(request.frames)} frames). "
+                f"Minimum {settings.collect_min_frames} required."
+            ),
         )
 
     frames = _pad_or_truncate(request.frames)
     record = {"label": request.label, "frames": frames}
+    path = _dataset_path()
 
     try:
-        DATASET_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(DATASET_PATH, "a", encoding="utf-8") as f:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except OSError as exc:
         log.error("Failed to write dataset: %s", exc)
-        raise HTTPException(status_code=500, detail="Could not write dataset file.")
+        raise HTTPException(status_code=500, detail="Could not write dataset file.") from exc
 
     log.info("Collected sequence — label=%s  frames=%d", request.label, len(frames))
     return {"status": "saved", "label": request.label, "frames": len(frames)}
 
 
-@router.get("/stats")
-async def get_stats():
+@router.get(
+    "/stats",
+    response_model=CollectStatsResponse,
+    summary="Dataset class distribution",
+)
+async def get_stats() -> dict:
     """
     Return per-class sample counts from the current dataset.
     Useful for monitoring collection progress from the frontend.
     """
     records = _load_all_records()
-    counts  = Counter(r.get("label", "UNKNOWN") for r in records)
+    counts = Counter(r.get("label", "UNKNOWN") for r in records)
     return {
         "total_samples": len(records),
-        "classes":       dict(sorted(counts.items())),
+        "classes": dict(sorted(counts.items())),
     }
 
 
-@router.delete("/clear")
-async def clear_label(label: str):
+@router.delete(
+    "/clear",
+    response_model=ClearLabelResponse,
+    summary="Remove samples for a label",
+)
+async def clear_label(label: str) -> dict:
     """
     Remove all samples for a given gesture label.
     Useful when re-recording low-quality data.
@@ -156,9 +154,9 @@ async def clear_label(label: str):
     if not label:
         raise HTTPException(status_code=400, detail="label query parameter is required.")
 
-    records  = _load_all_records()
+    records = _load_all_records()
     filtered = [r for r in records if r.get("label") != label]
-    removed  = len(records) - len(filtered)
+    removed = len(records) - len(filtered)
 
     _write_all_records(filtered)
     log.info("Removed %d samples for label=%s", removed, label)

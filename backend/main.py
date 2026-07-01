@@ -3,97 +3,165 @@ ASL Recognition Backend — FastAPI Application
 ──────────────────────────────────────────────
 
 Main application entry point.
-Handles app setup, middleware, and routing.
+Handles app setup, middleware, routing, and lifespan management.
 """
 
-from fastapi import FastAPI
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import logging
 
-# Import routers
-from routers.prediction import router as prediction_router
+from core.config import settings
+from core.dependencies import get_prediction_service
+from core.exceptions import register_exception_handlers
+from core.inference.realtime_asl_predictor import shutdown_static_predictor
+from core.logging_config import configure_logging, flush_logging
+from core.middleware import RequestLoggingMiddleware
 from routers.data_collection import router as data_collection_router
+from routers.prediction import router as prediction_router
+from schemas.health import LivenessResponse, MetricsResponse, ReadinessResponse
+from services.prediction_service import ASLPredictionService
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Logging Configuration
-# ─────────────────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
-    datefmt="%H:%M:%S",
-)
 log = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FastAPI Application
-# ─────────────────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application startup and shutdown lifecycle."""
+    configure_logging()
+
+    log.info("─" * 60)
+    log.info("%s v%s starting", settings.app_name, settings.app_version)
+    log.info("Environment: %s", settings.environment)
+    log.info("Project root: %s", settings.project_root)
+    log.info("Models dir:   %s", settings.models_dir)
+    log.info("Dataset path: %s", settings.dynamic_dataset_path)
+    log.info("CORS origins: %s", settings.cors_origin_list)
+    log.info("API Docs: http://localhost:%s/docs", settings.port)
+    log.info("Health:   http://localhost:%s/health", settings.port)
+    log.info("Ready:    http://localhost:%s/ready", settings.port)
+    log.info("─" * 60)
+
+    prediction_service = ASLPredictionService()
+    app.state.prediction_service = prediction_service
+
+    checks = prediction_service.readiness_checks()
+    if prediction_service.is_ready():
+        log.info("Readiness: all components ready")
+    else:
+        log.warning("Readiness: not all components ready — %s", checks)
+
+    yield
+
+    log.info("Shutting down ASL Recognition Engine")
+    prediction_service.shutdown()
+    shutdown_static_predictor()
+    flush_logging()
+    log.info("Shutdown complete")
+
+
 app = FastAPI(
-    title="ASL Sign Language Communication Platform",
-    description="Real-time sign language recognition via MediaPipe + XGBoost (static) + LSTM/ONNX (dynamic)",
-    version="1.1.0",
+    title=settings.app_name,
+    description=(
+        "Real-time sign language recognition via MediaPipe + XGBoost (static) "
+        "and LSTM/ONNX (dynamic). "
+        "Configure production CORS via the CORS_ORIGINS environment variable."
+    ),
+    version=settings.app_version,
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CORS Middleware
-# ─────────────────────────────────────────────────────────────────────────────
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 🔒 Change in production
-    allow_credentials=True,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Root Endpoint
-# ─────────────────────────────────────────────────────────────────────────────
-@app.get("/")
-async def root():
-    return JSONResponse({
-        "service": "ASL Recognition Engine",
-        "version": "1.0.0",
-        "status": "running",
-        "docs": "/docs",
-        "api_base": "/api/v1",
-    })
+register_exception_handlers(app)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Include Routers
-# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/", summary="Service root")
+async def root():
+    return JSONResponse(
+        {
+            "service": "ASL Recognition Engine",
+            "version": settings.api_version,
+            "status": "running",
+            "docs": "/docs",
+            "api_base": "/api/v1",
+        }
+    )
+
+
+@app.get(
+    "/health",
+    response_model=LivenessResponse,
+    tags=["health"],
+    summary="Process liveness probe",
+)
+async def health_liveness() -> dict:
+    """Return 200 when the process is alive. Does not verify model readiness."""
+    return {"status": "ok"}
+
+
+@app.get(
+    "/ready",
+    response_model=ReadinessResponse,
+    tags=["health"],
+    summary="Readiness probe",
+    responses={503: {"description": "One or more components are not ready."}},
+)
+async def health_readiness(
+    service: ASLPredictionService = Depends(get_prediction_service),
+):
+    """
+    Return 200 when prediction dependencies are ready to serve traffic.
+    Returns 503 when static model or MediaPipe failed to initialise.
+    """
+    checks = service.readiness_checks()
+    ready = all(checks.values())
+    body = {
+        "status": "ready" if ready else "not_ready",
+        "checks": checks,
+    }
+    status_code = 200 if ready else 503
+    return JSONResponse(status_code=status_code, content=body)
+
+
+@app.get(
+    "/metrics",
+    response_model=MetricsResponse,
+    tags=["health"],
+    summary="Operational metrics",
+)
+async def metrics(
+    service: ASLPredictionService = Depends(get_prediction_service),
+) -> dict:
+    """Lightweight in-process operational statistics."""
+    return service.get_metrics()
+
+
 app.include_router(prediction_router)
 app.include_router(data_collection_router)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Startup & Shutdown Events
-# ─────────────────────────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup_event():
-    log.info("─" * 60)
-    log.info("ASL Sign Language Communication Platform v1.1.0 Starting")
-    log.info("API Docs: http://localhost:8000/docs")
-    log.info("Health:   http://localhost:8000/api/v1/health")
-    log.info("Collect:  http://localhost:8000/api/v1/collect/stats")
-    log.info("─" * 60)
 
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    log.info("ASL Recognition Engine Shutdown")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Entry Point
-# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,   # ✅ Enable for development
-        log_level="info",
+        host=settings.host,
+        port=settings.port,
+        reload=True,
+        log_level=settings.log_level.lower(),
     )

@@ -11,8 +11,11 @@ Spell correction:
 """
 
 import time
+import logging
 from enum import Enum
 from symspellpy import SymSpell, Verbosity
+
+log = logging.getLogger(__name__)
 
 
 class GestureState(Enum):
@@ -250,7 +253,7 @@ class TextBuilder:
 
         # MEMORY PROTECTION: Only trigger if meaningful change
         if final_text != self._last_spoken_sentence:
-            print(f"[Sentence] {final_text}")
+            log.info("[Sentence] %s", final_text)
             self._last_finalized_sentence = final_text
             self._last_spoken_sentence = final_text
             
