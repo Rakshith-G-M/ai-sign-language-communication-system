@@ -69,7 +69,7 @@ async def generate_tts(request: TTSRequest):
         raise HTTPException(status_code=500, detail="Speech generation failed")
 
 @router.post("/predict", response_model=PredictionResponse)
-async def predict(file: UploadFile = File(...)):
+async def predict(file: UploadFile = File(...), session_id: str | None = None):
     """
     Predict ASL letter from uploaded image frame.
     """
@@ -82,7 +82,7 @@ async def predict(file: UploadFile = File(...)):
     try:
         contents = await file.read()
 
-        result = prediction_service.predict_from_bytes(contents, start_time)
+        result = prediction_service.predict_from_bytes(contents, start_time, session_id=session_id)
         return result
 
     except Exception as exc:
@@ -91,7 +91,7 @@ async def predict(file: UploadFile = File(...)):
 
 
 @router.post("/predict-base64", response_model=PredictionResponse)
-async def predict_base64(request: Base64Request):
+async def predict_base64(request: Base64Request, session_id: str | None = None):
     """
     Predict ASL letter from base64 image.
     """
@@ -99,7 +99,7 @@ async def predict_base64(request: Base64Request):
 
     try:
         result = prediction_service.predict_from_base64(
-            request.image, start_time
+            request.image, start_time, session_id=session_id
         )
         return result
 
@@ -109,20 +109,20 @@ async def predict_base64(request: Base64Request):
 
 
 @router.post("/reset")
-async def reset():
+async def reset(session_id: str | None = None):
     """
     Reset word and sentence state.
     """
-    prediction_service.reset()
+    prediction_service.reset(session_id=session_id)
     return {"status": "reset successful"}
 
 
 @router.get("/state")
-async def get_state():
+async def get_state(session_id: str | None = None):
     """
     Get current word and sentence state.
     """
-    return prediction_service.get_state()
+    return prediction_service.get_state(session_id=session_id)
 
 
 @router.get("/health")

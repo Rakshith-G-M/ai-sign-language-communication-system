@@ -11,8 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 
-# Import router
+# Import routers
 from routers.prediction import router as prediction_router
+from routers.data_collection import router as data_collection_router
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging Configuration
@@ -28,9 +29,9 @@ log = logging.getLogger(__name__)
 # FastAPI Application
 # ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="ASL Recognition Engine",
-    description="Real-time sign language recognition via MediaPipe + XGBoost",
-    version="1.0.0",
+    title="ASL Sign Language Communication Platform",
+    description="Real-time sign language recognition via MediaPipe + XGBoost (static) + LSTM/ONNX (dynamic)",
+    version="1.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -64,6 +65,7 @@ async def root():
 # Include Routers
 # ─────────────────────────────────────────────────────────────────────────────
 app.include_router(prediction_router)
+app.include_router(data_collection_router)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Startup & Shutdown Events
@@ -71,9 +73,10 @@ app.include_router(prediction_router)
 @app.on_event("startup")
 async def startup_event():
     log.info("─" * 60)
-    log.info("ASL Recognition Engine Starting")
+    log.info("ASL Sign Language Communication Platform v1.1.0 Starting")
     log.info("API Docs: http://localhost:8000/docs")
-    log.info("Health: http://localhost:8000/api/v1/health")
+    log.info("Health:   http://localhost:8000/api/v1/health")
+    log.info("Collect:  http://localhost:8000/api/v1/collect/stats")
     log.info("─" * 60)
 
 

@@ -408,25 +408,23 @@ def draw_quit_hint(frame) -> None:
 # _pf_hands               : persistent MediaPipe Hands context (tracking mode)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_pf_model = None
+_pf_encoder = None
+_pf_hands = None
+_fallback_session = None
+
 def _init_predict_frame_state():
     """Load model artefacts and build all module-level state for predict_frame()."""
-    global _pf_model, _pf_encoder, _pf_buffer
-    global _pf_candidate, _pf_stability, _pf_stable, _pf_hands
-    global _pf_hand_missing_counter
+    global _pf_model, _pf_encoder, _pf_hands
 
     _pf_model, _pf_encoder = load_model_artefacts()
-    _pf_buffer    = deque(maxlen=BUFFER_SIZE)
-    _pf_candidate = None
-    _pf_stability = 0
-    _pf_stable    = None
-    _pf_hand_missing_counter = 0
     _pf_hands     = MP_HANDS.Hands(
         static_image_mode=True,
         max_num_hands=1,
         min_detection_confidence=0.5,
         min_tracking_confidence=0.7,
     )
-    log.info("predict_frame() state initialised.")
+    log.info("predict_frame() model artefacts initialised.")
 
 # Initialise eagerly at import time so the first call to predict_frame()
 # has no setup latency.  Errors (missing model files) surface immediately.
@@ -441,6 +439,7 @@ except FileNotFoundError as _pf_init_err:
 # ─────────────────────────────────────────────────────────────────────────────
 def predict_frame(
     frame,
+    session=None,
 ) -> tuple:
     """
     Process one BGR frame through the full ASL prediction pipeline.
@@ -462,22 +461,30 @@ def predict_frame(
           ↓  return annotated_frame, stable_letter, hand_detected
 
     State persistence:
-        The buffer, candidate, and stability counter live at module level so
-        they accumulate correctly across successive calls, exactly as they do
-        inside the while-loop of run_predictor().
+        The buffer, candidate, and stability counter live inside the PredictionSession
+        object so they accumulate correctly across successive calls.
 
     Args:
-        frame : np.ndarray — BGR image from cv2.VideoCapture or any source.
-                The frame is annotated in-place; pass a copy if you need the
-                original untouched.
+        frame   : np.ndarray — BGR image from cv2.VideoCapture or any source.
+                  The frame is annotated in-place; pass a copy if you need the
+                  original untouched.
+        session : PredictionSession | None — User session object to store state.
+                  If None, a default fallback session is used.
 
     Returns:
         annotated_frame : np.ndarray — BGR frame with skeleton + letter overlay.
         stable_letter   : str | None — stabilised letter, or None.
         hand_detected   : bool       — True if MediaPipe found a hand.
     """
-    global _pf_buffer, _pf_candidate, _pf_stability, _pf_stable
-    global _pf_hand_missing_counter
+    global _fallback_session
+
+    if session is None:
+        if _fallback_session is None:
+            from core.inference.prediction_session import PredictionSession
+            _fallback_session = PredictionSession(buffer_size=BUFFER_SIZE)
+        session = _fallback_session
+
+    session.touch()
 
     # ── BGR → RGB ─────────────────────────────────────────────────────────────
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -489,7 +496,7 @@ def predict_frame(
 
     if hand_detected:
         # Reset the missing counter since we found a hand
-        _pf_hand_missing_counter = 0
+        session.hand_missing_counter = 0
         
         hand_landmarks = results.multi_hand_landmarks[0]
 
@@ -511,46 +518,46 @@ def predict_frame(
         # ── Layer 1: confidence gate + gesture rules + A/S filter ─────────────
         raw_letter = predict_sign(normalised_landmarks, _pf_model, _pf_encoder)
 
+        # Save landmarks to history for dynamic gestures
+        session.landmarks_history.append(normalised_landmarks)
+
         # ── Layer 2: rolling majority-vote buffer ─────────────────────────────
         if raw_letter is not None:
-            _pf_buffer.append(raw_letter)
-            vote = Counter(_pf_buffer).most_common(1)[0][0]
+            session.buffer.append(raw_letter)
+            vote = Counter(session.buffer).most_common(1)[0][0]
         else:
             vote = (
-                Counter(_pf_buffer).most_common(1)[0][0]
-                if _pf_buffer else None
+                Counter(session.buffer).most_common(1)[0][0]
+                if session.buffer else None
             )
 
         # ── Layer 3: hysteresis lock ───────────────────────────────────────────
-        if vote == _pf_candidate:
-            _pf_stability += 1
+        if vote == session.candidate_letter:
+            session.stability_counter += 1
         else:
-            _pf_candidate = vote
-            _pf_stability = 1
+            session.candidate_letter = vote
+            session.stability_counter = 1
 
-        if _pf_stability >= STABILITY_THRESHOLD:
-            _pf_stable = _pf_candidate
+        if session.stability_counter >= STABILITY_THRESHOLD:
+            session.stable_letter = session.candidate_letter
 
     else:
         # ── GRACE PERIOD LOGIC ────────────────────────────────────────────────
         # Instead of resetting immediately, we increment a counter. 
         # Only after HAND_MISSING_THRESHOLD consecutive missing frames 
         # do we actually wipe the stability layers.
-        _pf_hand_missing_counter += 1
+        session.hand_missing_counter += 1
         
-        if _pf_hand_missing_counter >= HAND_MISSING_THRESHOLD:
-            _pf_buffer.clear()
-            _pf_candidate = None
-            _pf_stability = 0
-            _pf_stable    = None
+        if session.hand_missing_counter >= HAND_MISSING_THRESHOLD:
+            session.reset_prediction_state()
             # Log only once on reset to avoid spam
-            if _pf_hand_missing_counter == HAND_MISSING_THRESHOLD:
+            if session.hand_missing_counter == HAND_MISSING_THRESHOLD:
                 log.debug("Hand missing threshold reached. Resetting prediction state.")
 
     # ── Overlay ───────────────────────────────────────────────────────────────
-    draw_prediction_overlay(frame, _pf_stable)
+    draw_prediction_overlay(frame, session.stable_letter)
 
-    return frame, _pf_stable, hand_detected
+    return frame, session.stable_letter, hand_detected
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -11,7 +11,6 @@ Spell correction:
 """
 
 import time
-import pkg_resources
 from enum import Enum
 from symspellpy import SymSpell, Verbosity
 
@@ -63,11 +62,11 @@ class TextBuilder:
         # ── SymSpell initialisation ────────────────────────────────────────
         # Loaded once at construction; lookup() is O(1) at runtime so it is
         # safe to call inside the real-time loop indirectly via _commit_word().
+        import os
+        import symspellpy
         self._sym_spell = SymSpell(max_dictionary_edit_distance=2)
-        _dict_path = pkg_resources.resource_filename(
-            "symspellpy",
-            "frequency_dictionary_en_82_765.txt",
-        )
+        symspellpy_dir = os.path.dirname(symspellpy.__file__)
+        _dict_path = os.path.join(symspellpy_dir, "frequency_dictionary_en_82_765.txt")
         self._sym_spell.load_dictionary(_dict_path, term_index=0, count_index=1)
 
     # ------------------------------------------------------------------ #
@@ -79,17 +78,37 @@ class TextBuilder:
         stable_letter: str | None,
         hand_detected: bool,
         timestamp: float,
+        stable_word: str | None = None,
     ) -> tuple[str, str, list[str]]:
         """
         Process one prediction tick.
         """
-        if hand_detected:
+        if stable_word:
+            self.commit_word_directly(stable_word, timestamp)
+        elif hand_detected:
             self._on_hand_present(stable_letter, timestamp)
         else:
             self._on_hand_absent(timestamp)
 
         suggestions = self.get_word_suggestions()
         return self.current_word, self.sentence, suggestions
+
+    def commit_word_directly(self, word: str, timestamp: float) -> None:
+        """Commit a whole word directly (e.g., from dynamic sign recognition) to the sentence."""
+        if not word:
+            return
+
+        # 1. Commit any existing typed letters first
+        if self.current_word:
+            self._commit_word()
+
+        # 2. Append the new word to the sentence
+        self.sentence += word.upper() + " "
+        self.current_word = ""
+        self._last_letter = None
+        self._space_committed = True
+        self._last_hand_time = timestamp
+        self._state = GestureState.IDLE
 
     def reset(self) -> None:
         """Hard-reset all state (useful for testing or manual restarts)."""

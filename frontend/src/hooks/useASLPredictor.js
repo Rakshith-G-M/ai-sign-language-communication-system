@@ -26,6 +26,11 @@ function useASLPredictor(apiBase = 'http://localhost:8000') {
 
   const abortControllerRef = useRef(null);
   const audioRef = useRef(null);
+  const sessionIdRef = useRef(null);
+
+  if (!sessionIdRef.current) {
+    sessionIdRef.current = Math.random().toString(36).substring(2, 15) + '_' + Date.now();
+  }
 
   /**
    * Play TTS audio from text
@@ -75,7 +80,7 @@ function useASLPredictor(apiBase = 'http://localhost:8000') {
 
         abortControllerRef.current = new AbortController();
 
-        const response = await fetch(`${apiBase}/api/v1/predict`, {
+        const response = await fetch(`${apiBase}/api/v1/predict?session_id=${sessionIdRef.current}`, {
           method: 'POST',
           body: formData,
           signal: abortControllerRef.current.signal,
@@ -134,7 +139,7 @@ function useASLPredictor(apiBase = 'http://localhost:8000') {
       try {
         const startTime = performance.now();
 
-        const response = await fetch(`${apiBase}/api/v1/predict-base64`, {
+        const response = await fetch(`${apiBase}/api/v1/predict-base64?session_id=${sessionIdRef.current}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -191,7 +196,7 @@ function useASLPredictor(apiBase = 'http://localhost:8000') {
    */
   const resetState = useCallback(async () => {
     try {
-      const response = await fetch(`${apiBase}/api/v1/reset`, {
+      const response = await fetch(`${apiBase}/api/v1/reset?session_id=${sessionIdRef.current}`, {
         method: 'POST',
       });
 
@@ -225,7 +230,7 @@ function useASLPredictor(apiBase = 'http://localhost:8000') {
    */
   const getState = useCallback(async () => {
     try {
-      const response = await fetch(`${apiBase}/api/v1/state`);
+      const response = await fetch(`${apiBase}/api/v1/state?session_id=${sessionIdRef.current}`);
 
       if (!response.ok) {
         throw new Error(`State fetch failed: ${response.status}`);
