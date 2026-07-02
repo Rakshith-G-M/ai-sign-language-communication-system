@@ -101,6 +101,27 @@ def test_tts_empty_text_returns_400(client):
     assert response.status_code == 400
 
 
+def test_tts_valid_text_returns_200_and_audio(client):
+    from unittest.mock import patch, MagicMock
+
+    with patch("services.tts_service.gTTS") as mock_gtts:
+        mock_instance = MagicMock()
+        
+        # When write_to_fp is called, write fake audio bytes to the stream
+        def mock_write_to_fp(fp):
+            fp.write(b"fake_audio_bytes")
+            
+        mock_instance.write_to_fp.side_effect = mock_write_to_fp
+        mock_gtts.return_value = mock_instance
+        
+        response = client.post("/api/v1/tts", json={"text": "Hello world"})
+        assert response.status_code == 200
+        assert response.content == b"fake_audio_bytes"
+        assert response.headers["content-type"] == "audio/mpeg"
+        assert response.headers["content-length"] == str(len(b"fake_audio_bytes"))
+
+
+
 def test_reset_and_state_session_isolation(client):
     client.post("/api/v1/reset", params={"session_id": "session_a"})
     client.post("/api/v1/reset", params={"session_id": "session_b"})
