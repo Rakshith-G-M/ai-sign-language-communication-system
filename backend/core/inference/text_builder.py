@@ -16,12 +16,30 @@ Spell correction:
     negligible latency to the real-time loop.
 """
 
+import os
 import time
 import logging
 from enum import Enum
 from symspellpy import SymSpell, Verbosity
 
 log = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SymSpell module-level singleton
+# ─────────────────────────────────────────────────────────────────────────────
+# The dictionary is large (~6 MB).  Loading it once here ensures that multiple
+# TextBuilder instances (e.g. one per user session) share a single copy in
+# memory.  Subsequent TextBuilder.__init__ calls reference _SYM_SPELL directly
+# with zero additional I/O.
+import symspellpy as _symspellpy
+
+_SYM_SPELL = SymSpell(max_dictionary_edit_distance=2)
+_SYM_SPELL.load_dictionary(
+    os.path.join(os.path.dirname(_symspellpy.__file__), "frequency_dictionary_en_82_765.txt"),
+    term_index=0,
+    count_index=1,
+)
+del _symspellpy  # remove the alias; _SYM_SPELL holds the only reference needed
 
 
 class GestureState(Enum):
@@ -69,15 +87,9 @@ class TextBuilder:
         # ── Letter timing (noise filter) ──────────────────────────────────
         self.MIN_LETTER_DURATION: float = 0.6   # seconds held before LOCKED
 
-        # ── SymSpell initialisation ────────────────────────────────────────
-        # Loaded once at construction; lookup() is O(1) at runtime so it is
-        # safe to call inside the real-time loop indirectly via _commit_word().
-        import os
-        import symspellpy
-        self._sym_spell = SymSpell(max_dictionary_edit_distance=2)
-        symspellpy_dir = os.path.dirname(symspellpy.__file__)
-        _dict_path = os.path.join(symspellpy_dir, "frequency_dictionary_en_82_765.txt")
-        self._sym_spell.load_dictionary(_dict_path, term_index=0, count_index=1)
+        # ── SymSpell reference ─────────────────────────────────────────────
+        # Use the module-level singleton (loaded once at import time).
+        self._sym_spell = _SYM_SPELL
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #

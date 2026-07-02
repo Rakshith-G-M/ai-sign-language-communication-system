@@ -49,6 +49,7 @@ def test_readiness_returns_structured_checks(client):
         "static_model",
         "mediapipe",
         "prediction_service",
+        "dynamic_predictor",
     }
 
 

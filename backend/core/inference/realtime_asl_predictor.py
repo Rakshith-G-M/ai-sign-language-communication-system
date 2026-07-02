@@ -26,7 +26,7 @@ Dependencies:
 """
 
 import sys
-import time                                          # ← ADDED
+import time
 import logging
 from collections import deque, Counter
 from pathlib import Path
@@ -37,7 +37,7 @@ import numpy as np
 import mediapipe as mp
 
 from core.ml.feature_engineering import extract_hand_features_v2, TOTAL_FEATURES_V2
-from core.inference.text_builder import TextBuilder   # ← ADDED
+from core.inference.text_builder import TextBuilder
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -632,7 +632,7 @@ def run_predictor(camera_index: int = 0) -> None:
     stability_counter:     int        = 0
 
     # ── TextBuilder: converts stable letters → words → sentences ─────────────
-    text_builder = TextBuilder()                             # ← ADDED
+    text_builder = TextBuilder()
 
     with MP_HANDS.Hands(
         static_image_mode=False,       # tracking mode — faster for video
@@ -663,7 +663,7 @@ def run_predictor(camera_index: int = 0) -> None:
 
             # Derived once per frame; used by both the stabilisation logic
             # below and TextBuilder so both always agree on hand presence.
-            hand_detected = results.multi_hand_landmarks is not None  # ← ADDED
+            hand_detected = results.multi_hand_landmarks is not None
 
             if results.multi_hand_landmarks:
                 hand_landmarks = results.multi_hand_landmarks[0]
@@ -724,12 +724,11 @@ def run_predictor(camera_index: int = 0) -> None:
                 # ── TextBuilder update (hand present) ─────────────────────────
                 # Passes the fully stabilised letter so TextBuilder only ever
                 # sees letters that have cleared all three stability layers.
-                current_word, sentence = text_builder.update(  # ← ADDED
-                    current_stable_letter,                      # ← ADDED
-                    hand_detected,                              # ← ADDED
-                    time.time(),                                # ← ADDED
-                )                                               # ← ADDED
-                print("Word:", current_word, "| Sentence:", sentence)  # ← ADDED
+                current_word, sentence = text_builder.update(
+                    current_stable_letter,
+                    hand_detected,
+                    time.time(),
+                )
 
             else:
                 # No hand detected — reset all three layers so the next sign
@@ -742,12 +741,11 @@ def run_predictor(camera_index: int = 0) -> None:
                 # ── TextBuilder update (no hand) ──────────────────────────────
                 # Drives the space / sentence-finalisation timers even when
                 # the stabilisation state has already been wiped above.
-                current_word, sentence = text_builder.update(  # ← ADDED
-                    None,                                       # ← ADDED
-                    False,                                      # ← ADDED
-                    time.time(),                                # ← ADDED
-                )                                               # ← ADDED
-                print("Word:", current_word, "| Sentence:", sentence)  # ← ADDED
+                current_word, sentence = text_builder.update(
+                    None,
+                    False,
+                    time.time(),
+                )
 
             # ── Render overlay and display ────────────────────────────────────
             draw_prediction_overlay(frame, current_stable_letter)

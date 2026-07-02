@@ -241,6 +241,7 @@ class ASLPredictionService:
         return {
             "static_model": is_static_predictor_ready(),
             "mediapipe": is_static_predictor_ready(),
+            "dynamic_predictor": True,
             "prediction_service": True,
         }
 

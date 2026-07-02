@@ -109,9 +109,7 @@ A single `POST /api/v1/predict` request follows this path:
    values fall back to `"default"` without rejecting the request.
 4. **Static prediction** — `predict_frame()` runs MediaPipe + XGBoost with
    three-layer stabilisation (confidence gate → majority vote → hysteresis).
-5. **Dynamic prediction** — If the hand is moving, static letter output is
-   suppressed and `DynamicPredictor` may return a whole word (ONNX or geometric
-   fallback).
+5. **Dynamic prediction** — Permanently removed; the dynamic prediction check always returns a compatibility stub.
 6. **Text assembly** — `TextBuilder` updates word/sentence state and optional
    spell-check suggestions.
 7. **Response** — `PredictionResponse` JSON with latency in milliseconds.
@@ -145,8 +143,7 @@ Responsibilities:
 |-----------|----------------|-------|
 | XGBoost model + LabelEncoder | `realtime_asl_predictor` import | Loaded once; shared across sessions |
 | MediaPipe Hands | Same module | Closed on shutdown via `shutdown_static_predictor()` |
-| DynamicPredictor | Service `__post_init__` | ONNX if artefacts present; else geometric fallback |
-| SymSpell dictionary | Per `TextBuilder` instance | Loaded per session |
+| SymSpell dictionary | Module-level singleton | Loaded once at import-time |
 
 Models are **not** reloaded per request.
 
@@ -282,9 +279,8 @@ FastAPI **`lifespan`** context manager (replaces deprecated `@app.on_event`):
 }
 ```
 
-`dynamic_predictor` is always `true` because geometric fallback is always
-available. `static_model` and `mediapipe` require XGBoost artefacts and a
-successful MediaPipe initialisation.
+`dynamic_predictor` is always `true` to maintain frontend schema compatibility.
+`static_model` and `mediapipe` require XGBoost artefacts and a successful MediaPipe initialisation.
 
 ### Metrics
 
@@ -294,7 +290,7 @@ successful MediaPipe initialisation.
   "active_sessions": 3,
   "total_predictions": 1200,
   "static_predictions": 1100,
-  "dynamic_predictions": 45
+  "dynamic_predictions": 0
 }
 ```
 
@@ -313,7 +309,6 @@ main.py
  ├── routers/prediction.py
  │    └── services/prediction_service.py
  │         ├── core/inference/realtime_asl_predictor.py  [import-time model load]
- │         ├── core/inference/dynamic_predictor.py
  │         ├── core/inference/prediction_session.py
  │         └── core/inference/text_builder.py
  └── routers/data_collection.py
@@ -367,11 +362,7 @@ Ensure model artefacts exist at `{project_root}/models/`:
 - `asl_xgboost.pkl`
 - `label_encoder.pkl`
 
-Optional dynamic models:
 
-- `asl_dynamic.onnx`
-- `dynamic_label_encoder.pkl`
-- `dynamic_scaler.pkl`
 
 ## Running tests
 

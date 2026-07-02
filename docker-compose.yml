@@ -25,14 +25,13 @@ services:
       retries: 3
       start_period: 40s
 
-  # Frontend Service
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: asl-frontend
     ports:
-      - "5173:5173"
+      - "3000:80"
     environment:
       - VITE_API_BASE=http://localhost:8000
     depends_on:
@@ -47,7 +46,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
     depends_on:
       - backend

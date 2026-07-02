@@ -92,12 +92,7 @@ class Settings(BaseSettings):
     max_sessions: int = 1_000
 
 
-    # ── Static inference thresholds (defaults match realtime_asl_predictor) ─
-    buffer_size: int = 12
-    confidence_threshold: float = 0.55
-    stability_threshold: int = 5
-    hand_missing_threshold: int = 6
-
+    # ── Log normalisation ────────────────────────────────────────────────
     @field_validator("log_level")
     @classmethod
     def normalize_log_level(cls, v: str) -> str:

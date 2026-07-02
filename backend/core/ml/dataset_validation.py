@@ -1,13 +1,12 @@
 """
 dataset_validation.py
 ─────────────────────
-Shared dataset validation helpers for static CSV and dynamic JSONL pipelines.
+Dataset validation helpers for the static CSV landmark pipeline.
 Duplicate detection warns by default; callers may choose to fail on duplicates.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from collections import Counter
 from pathlib import Path
@@ -17,10 +16,6 @@ import numpy as np
 import pandas as pd
 
 from core.ml.constants import (
-    DYNAMIC_FRAMES_KEY,
-    DYNAMIC_LABEL_KEY,
-    LEGACY_DYNAMIC_FEATURE_DIM,
-    SEQUENCE_LENGTH,
     STATIC_FEATURE_PREFIX,
     STATIC_LABEL_COLUMN,
     TOTAL_FEATURES_V2,
@@ -148,121 +143,3 @@ def validate_static_csv(
 
     return feature_cols
 
-
-def validate_dynamic_sequence(
-    frames,
-    *,
-    line_no: int | None = None,
-    sequence_length: int = SEQUENCE_LENGTH,
-) -> np.ndarray:
-    """
-    Validate one dynamic gesture sequence.
-
-    Returns:
-        float32 array of shape (sequence_length, TOTAL_FEATURES_V2).
-
-    Raises:
-        ValueError: On shape, legacy-format, or numeric violations.
-    """
-    prefix = f"Dynamic dataset line {line_no}" if line_no is not None else "Dynamic sequence"
-
-    try:
-        seq = np.asarray(frames, dtype=np.float32)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{prefix}: frames must be numeric.") from exc
-
-    expected_shape = (sequence_length, TOTAL_FEATURES_V2)
-    if seq.shape != expected_shape:
-        if seq.ndim == 2 and seq.shape[1] == LEGACY_DYNAMIC_FEATURE_DIM:
-            raise ValueError(
-                f"{prefix}: legacy {LEGACY_DYNAMIC_FEATURE_DIM}-D dataset detected. "
-                f"Expected shape {expected_shape}. Regenerate with the v2 pipeline."
-            )
-        raise ValueError(
-            f"{prefix}: invalid shape {seq.shape}, expected {expected_shape}."
-        )
-
-    validate_finite_array(seq, prefix)
-    return seq
-
-
-def validate_dynamic_record(record: dict, *, line_no: int | None = None) -> tuple[str, np.ndarray]:
-    """Validate one JSONL record and return (label, sequence array)."""
-    prefix = f"Dynamic dataset line {line_no}" if line_no is not None else "Dynamic record"
-
-    if not isinstance(record, dict):
-        raise ValueError(f"{prefix}: expected JSON object.")
-
-    label = record.get(DYNAMIC_LABEL_KEY)
-    frames = record.get(DYNAMIC_FRAMES_KEY)
-
-    if not isinstance(label, str) or not label.strip():
-        raise ValueError(f"{prefix}: missing or empty '{DYNAMIC_LABEL_KEY}'.")
-
-    if frames is None:
-        raise ValueError(f"{prefix}: missing '{DYNAMIC_FRAMES_KEY}'.")
-
-    seq = validate_dynamic_sequence(frames, line_no=line_no)
-    return label.strip(), seq
-
-
-def validate_dynamic_jsonl(
-    jsonl_path: str | Path,
-    *,
-    fail_on_duplicates: bool = False,
-    min_samples_per_class: int = 1,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Load and validate an entire dynamic JSONL dataset file.
-
-    Returns:
-        X : float32 array (n_samples, SEQUENCE_LENGTH, TOTAL_FEATURES_V2)
-        y : string label array (n_samples,)
-    """
-    path = Path(jsonl_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Dataset not found: {path.resolve()}")
-
-    sequences: list[np.ndarray] = []
-    labels: list[str] = []
-    malformed = 0
-
-    with path.open("r", encoding="utf-8") as handle:
-        for line_no, line in enumerate(handle, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-                label, seq = validate_dynamic_record(record, line_no=line_no)
-            except (json.JSONDecodeError, ValueError, TypeError) as exc:
-                malformed += 1
-                log.warning("Skipping malformed line %d: %s", line_no, exc)
-                continue
-
-            sequences.append(seq)
-            labels.append(label)
-
-    if malformed:
-        log.warning("Skipped %d malformed line(s) in %s.", malformed, path)
-
-    if not sequences:
-        raise ValueError(f"No valid sequences found in {path}.")
-
-    X = np.stack(sequences, axis=0)
-    y = np.array(labels)
-
-    flat = X.reshape(len(X), -1)
-    duplicates = find_duplicate_rows(flat, y)
-    warn_duplicates(duplicates, str(path), fail_on_duplicates=fail_on_duplicates)
-
-    class_counts = Counter(y)
-    undersampled = [label for label, count in class_counts.items() if count < min_samples_per_class]
-    if undersampled:
-        raise ValueError(
-            f"Classes with fewer than {min_samples_per_class} sample(s): "
-            f"{sorted(undersampled)}"
-        )
-
-    report_class_distribution(y, title=f"Validated dynamic dataset ({path.name})")
-    return X, y

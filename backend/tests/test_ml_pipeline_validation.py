@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
 
-from core.ml.constants import SEQUENCE_LENGTH, TOTAL_FEATURES_V2
+from core.ml.constants import TOTAL_FEATURES_V2
 from core.ml.dataset_validation import (
     find_duplicate_rows,
     static_feature_columns,
-    validate_dynamic_record,
-    validate_dynamic_sequence,
     validate_static_csv,
 )
 from core.ml.feature_engineering import validate_feature_vector_v2
@@ -49,37 +44,9 @@ def test_find_duplicate_rows_warn_indices():
     assert duplicates == [1]
 
 
-def test_validate_dynamic_sequence_rejects_legacy_63d():
-    legacy = np.zeros((SEQUENCE_LENGTH, 63), dtype=np.float32)
-    with pytest.raises(ValueError, match="legacy 63-D"):
-        validate_dynamic_sequence(legacy)
-
-
-def test_validate_dynamic_record_accepts_canonical_shape():
-    frames = np.zeros((SEQUENCE_LENGTH, TOTAL_FEATURES_V2), dtype=np.float32).tolist()
-    label, seq = validate_dynamic_record({"label": "HELLO", "frames": frames})
-    assert label == "HELLO"
-    assert seq.shape == (SEQUENCE_LENGTH, TOTAL_FEATURES_V2)
-
-
 def test_validate_feature_vector_v2():
     vector = np.zeros(TOTAL_FEATURES_V2, dtype=np.float32)
     validate_feature_vector_v2(vector)
 
     with pytest.raises(ValueError, match="expected shape"):
         validate_feature_vector_v2(np.zeros(10, dtype=np.float32))
-
-
-def test_validate_dynamic_jsonl_roundtrip(tmp_path: Path):
-    frames = np.zeros((SEQUENCE_LENGTH, TOTAL_FEATURES_V2), dtype=np.float32).tolist()
-    jsonl_path = tmp_path / "dynamic_gestures.jsonl"
-    jsonl_path.write_text(
-        json.dumps({"label": "HELLO", "frames": frames}) + "\n",
-        encoding="utf-8",
-    )
-
-    from core.ml.dataset_validation import validate_dynamic_jsonl
-
-    X, y = validate_dynamic_jsonl(jsonl_path, min_samples_per_class=1)
-    assert X.shape == (1, SEQUENCE_LENGTH, TOTAL_FEATURES_V2)
-    assert y.tolist() == ["HELLO"]
