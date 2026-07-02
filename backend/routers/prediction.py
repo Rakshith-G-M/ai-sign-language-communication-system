@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+import io
 
 import edge_tts
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
@@ -48,17 +49,56 @@ async def generate_tts(request: TTSRequest) -> Response:
     try:
         communicate = edge_tts.Communicate(request.text.strip(), "en-US-AriaNeural")
         audio_data = bytearray()
+        chunk_count = 0
+        audio_chunk_count = 0
 
         async for chunk in communicate.stream():
+            chunk_count += 1
+            # Only process audio chunks, skip metadata
             if chunk["type"] == "audio":
+                audio_chunk_count += 1
                 audio_data.extend(chunk["data"])
 
+        # Enhanced validation: check if we actually received audio chunks
         if not audio_data:
+            log.warning(
+                "TTS generation produced no audio data. Chunks received: %d, Audio chunks: %d",
+                chunk_count,
+                audio_chunk_count,
+            )
             raise HTTPException(status_code=502, detail="No audio generated")
 
-        return Response(content=bytes(audio_data), media_type="audio/mpeg")
+        if audio_chunk_count == 0:
+            log.warning(
+                "TTS generation received %d total chunks but zero audio chunks",
+                chunk_count,
+            )
+            raise HTTPException(status_code=502, detail="No audio chunks in response")
+
+        audio_bytes = bytes(audio_data)
+        
+        # Return response with proper headers for browser audio playback
+        return Response(
+            content=audio_bytes,
+            media_type="audio/mpeg",
+            headers={
+                # Essential for browser playback
+                "Content-Length": str(len(audio_bytes)),
+                "Content-Type": "audio/mpeg",
+                # Prevent caching to ensure fresh audio on each call
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                # Help browser handle the response correctly
+                "Accept-Ranges": "bytes",
+            },
+        )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as exc:
-        log.error("TTS engine error: %s", exc)
+        log.error("TTS engine error: %s - Type: %s", exc, type(exc).__name__)
         raise HTTPException(status_code=500, detail="Speech generation failed") from exc
 
 

@@ -538,9 +538,6 @@ def predict_frame(
         # ── Layer 1: confidence gate + gesture rules + A/S filter ─────────────
         raw_letter = predict_sign(normalised_landmarks, _pf_model, _pf_encoder)
 
-        # Save landmarks to history for dynamic gestures
-        session.landmarks_history.append(normalised_landmarks)
-
         # ── Layer 2: rolling majority-vote buffer ─────────────────────────────
         if raw_letter is not None:
             session.buffer.append(raw_letter)

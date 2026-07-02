@@ -57,21 +57,6 @@ class Settings(BaseSettings):
     def static_encoder_path(self) -> Path:
         return self.models_dir / "label_encoder.pkl"
 
-    @property
-    def dynamic_model_path(self) -> Path:
-        return self.models_dir / "asl_dynamic.onnx"
-
-    @property
-    def dynamic_encoder_path(self) -> Path:
-        return self.models_dir / "dynamic_label_encoder.pkl"
-
-    @property
-    def dynamic_scaler_path(self) -> Path:
-        return self.models_dir / "dynamic_scaler.pkl"
-
-    @property
-    def dynamic_dataset_path(self) -> Path:
-        return self.dataset_dir / "dynamic_gestures.jsonl"
 
     # ── Server ───────────────────────────────────────────────────────────
     host: str = "0.0.0.0"
@@ -100,26 +85,18 @@ class Settings(BaseSettings):
     max_base64_chars: int = 14_000_000                 # ~10 MB decoded
     max_tts_chars: int = 5_000
     max_session_id_length: int = 128
-    max_collect_frames: int = 300
+
 
     # ── Session management ───────────────────────────────────────────────
     session_idle_seconds: float = 600.0
     max_sessions: int = 1_000
 
-    # ── Data collection (schema unchanged — 63-D legacy frames) ───────────
-    collect_sequence_length: int = 30
-    collect_input_size: int = 63
-    collect_min_frames: int = 5
 
     # ── Static inference thresholds (defaults match realtime_asl_predictor) ─
     buffer_size: int = 12
     confidence_threshold: float = 0.55
     stability_threshold: int = 5
     hand_missing_threshold: int = 6
-
-    # ── Dynamic inference thresholds (defaults match dynamic_predictor) ───
-    dynamic_confidence_gate: float = 0.70
-    dynamic_min_history: int = 10
 
     @field_validator("log_level")
     @classmethod

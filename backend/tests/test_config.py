@@ -20,10 +20,6 @@ def test_project_root_resolves_to_repo_root():
     assert (settings.project_root / "backend").is_dir()
 
 
-def test_dataset_path_under_project_root():
-    settings = Settings()
-    assert settings.dynamic_dataset_path == settings.project_root / "dataset" / "dynamic_gestures.jsonl"
-
 
 def test_cors_origin_list_wildcard_default():
     settings = Settings(cors_origins="*")

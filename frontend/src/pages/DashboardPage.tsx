@@ -17,8 +17,9 @@ import { useSettingsStore } from '@/features/settings/store/settingsStore'
 import { useSystemHealth } from '@/features/system/hooks/useSystemHealth'
 import { useInferenceKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { useIsMobile } from '@/hooks/useMediaQuery'
-import { getSessionState } from '@/lib/api/prediction'
-import { getSessionId } from '@/lib/session'
+// getSessionState and getSessionId are kept for future "Resume last session" feature.
+// import { getSessionState } from '@/lib/api/prediction'
+// import { getSessionId } from '@/lib/session'
 import { fadeIn } from '@/lib/motion'
 
 export function DashboardPage() {
@@ -41,12 +42,23 @@ export function DashboardPage() {
 
   const handleToggleInference = useCallback(async () => {
     if (isRunning) {
+      console.debug('[inference] stopped')
       setRunning(false)
       stop()
     } else {
       unlockAudio()
       const ok = await start()
-      if (ok) setRunning(true)
+      if (ok) {
+        // Clear all transient runtime state so every new session starts clean.
+        // This prevents stale letters, sentences, timeline events and confidence
+        // values from a previous session appearing in the UI.
+        const store = useInferenceStore.getState()
+        store.resetPrediction()
+        store.clearTimeline()
+        store.setError(null)
+        console.debug('[inference] started')
+        setRunning(true)
+      }
     }
   }, [isRunning, setRunning, start, stop, unlockAudio])
 
@@ -65,16 +77,12 @@ export function DashboardPage() {
     setTimelineExpanded(showTimelineDefault)
   }, [showTimelineDefault, setTimelineExpanded])
 
-  useEffect(() => {
-    void getSessionState(getSessionId()).then((state) => {
-      if (state.word || state.sentence) {
-        useInferenceStore.getState().setPrediction({
-          word: state.word,
-          sentence: state.sentence,
-        })
-      }
-    })
-  }, [])
+  // NOTE: Automatic session-state restoration is intentionally disabled.
+  // Restoring backend word/sentence state on mount caused HELLO/THANK YOU and
+  // other leftover words to appear in the Sentence Builder before the user
+  // pressed Start. The getSessionState import is kept for a future opt-in
+  // "Resume last session" feature.
+  // void getSessionState(getSessionId()).then(...)
 
   useInferenceKeyboardShortcuts({
     onToggleInference: () => void handleToggleInference(),

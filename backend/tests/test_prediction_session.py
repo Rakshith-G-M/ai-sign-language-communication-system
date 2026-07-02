@@ -1,128 +1,120 @@
 """
 test_prediction_session.py
 ───────────────────────────
-Unit tests for ASL Prediction Session, Motion Classification,
-Dynamic Prediction, and TextBuilder integration.
+Unit tests for the static ASL alphabet prediction session and TextBuilder.
 """
 
 import sys
 from pathlib import Path
 import unittest
-from collections import deque
-import numpy as np
+import time
 
-# Add backend directory to path
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(_BACKEND_DIR))
 
 from core.inference.prediction_session import PredictionSession
-from core.inference.motion_classifier import is_hand_moving
-from core.inference.dynamic_predictor import DynamicPredictor
 from core.inference.text_builder import TextBuilder
 
 
-class MockLandmark:
-    def __init__(self, x: float, y: float, z: float):
-        self.x = x
-        self.y = y
-        self.z = z
+class TestPredictionSession(unittest.TestCase):
 
-
-class MockLandmarkList:
-    def __init__(self, landmarks: list[MockLandmark]):
-        self.landmark = landmarks
-
-
-class TestPredictionSessionAndPipeline(unittest.TestCase):
-    
     def test_session_isolation(self) -> None:
         """Verify that two prediction sessions maintain completely separate state."""
         session_a = PredictionSession(buffer_size=5)
         session_b = PredictionSession(buffer_size=5)
-        
-        # Modify session A
+
         session_a.buffer.append("H")
         session_a.text_builder.current_word = "HE"
-        
-        # Assert Session B remains unmodified
+
         self.assertEqual(len(session_b.buffer), 0)
         self.assertEqual(session_b.text_builder.current_word, "")
-        
-        # Modify session B
+
         session_b.buffer.append("W")
         session_b.text_builder.current_word = "WO"
-        
+
         self.assertEqual(list(session_a.buffer), ["H"])
         self.assertEqual(list(session_b.buffer), ["W"])
 
-    def test_motion_classifier_stationary(self) -> None:
-        """Verify that a stationary hand yields is_hand_moving = False."""
-        history = deque(maxlen=10)
-        
-        # Generate stationary landmarks (tremors around a point)
-        for i in range(10):
-            # Wrist at index 0, others dummy
-            wrist = MockLandmark(0.5 + (i % 2) * 0.001, 0.5 - (i % 2) * 0.001, 0.0)
-            history.append(MockLandmarkList([wrist] + [MockLandmark(0, 0, 0)] * 20))
-            
-        self.assertFalse(is_hand_moving(history))
+    def test_reset_all_clears_state(self) -> None:
+        """Verify reset_all() wipes buffers and text builder state."""
+        session = PredictionSession(buffer_size=5)
+        session.buffer.append("A")
+        session.candidate_letter = "A"
+        session.stability_counter = 3
+        session.text_builder.current_word = "AB"
+        session.text_builder.sentence = "HELLO "
 
-    def test_motion_classifier_moving(self) -> None:
-        """Verify that a moving hand yields is_hand_moving = True."""
-        history = deque(maxlen=10)
-        
-        # Generate moving landmarks (sweeping from x=0.2 to x=0.8)
-        for i in range(10):
-            wrist = MockLandmark(0.2 + i * 0.06, 0.5, 0.0)
-            history.append(MockLandmarkList([wrist] + [MockLandmark(0, 0, 0)] * 20))
-            
-        self.assertTrue(is_hand_moving(history))
+        session.reset_all()
 
-    def test_dynamic_predictor_hello_mock(self) -> None:
-        """Verify the mock prediction of 'HELLO' from horizontal waving."""
-        predictor = DynamicPredictor()
-        history = deque(maxlen=20)
-        
-        # Oscillating hand on X axis
-        for i in range(20):
-            # Sine wave oscillation
-            x_val = 0.5 + 0.04 * np.sin(i * 0.8)
-            wrist = MockLandmark(x_val, 0.5, 0.0)
-            history.append(MockLandmarkList([wrist] + [MockLandmark(0, 0, 0)] * 20))
-            
-        word, confidence = predictor.predict_sequence(history)
-        self.assertEqual(word, "HELLO")
-        self.assertGreater(confidence, 0.70)
+        self.assertEqual(len(session.buffer), 0)
+        self.assertIsNone(session.candidate_letter)
+        self.assertEqual(session.stability_counter, 0)
+        self.assertEqual(session.text_builder.current_word, "")
+        self.assertEqual(session.text_builder.sentence, "")
 
-    def test_dynamic_predictor_thank_you_mock(self) -> None:
-        """Verify the mock prediction of 'THANK-YOU' from vertical swiping."""
-        predictor = DynamicPredictor()
-        history = deque(maxlen=20)
-        
-        # Moving downwards on Y axis (increasing Y coordinates)
-        for i in range(20):
-            wrist = MockLandmark(0.5, 0.3 + i * 0.015, 0.0)
-            history.append(MockLandmarkList([wrist] + [MockLandmark(0, 0, 0)] * 20))
-            
-        word, confidence = predictor.predict_sequence(history)
-        self.assertEqual(word, "THANK-YOU")
-        self.assertGreater(confidence, 0.70)
 
-    def test_text_builder_direct_word(self) -> None:
-        """Verify that TextBuilder seamlessly integrates dynamic whole words."""
+class TestTextBuilder(unittest.TestCase):
+
+    def test_letter_accumulation_after_hold(self) -> None:
+        """Letters held past MIN_LETTER_DURATION are appended to current_word."""
         tb = TextBuilder()
-        
-        # Simulate partial letter spelling of "I" (which is a valid dictionary word)
-        tb.update("I", True, 100.0)
-        tb.update("I", True, 101.0) # lock it in (needs > MIN_LETTER_DURATION which is 0.6)
-        
-        self.assertEqual(tb.current_word, "I")
-        
-        # Now receive a dynamic word (should commit typed letter "I" to sentence, and append "HELLO" directly)
-        tb.update(None, True, 102.0, stable_word="HELLO")
-        
+        tb.MIN_LETTER_DURATION = 0.0   # disable hold timer for test speed
+
+        now = time.time()
+        tb.update("H", True, now)        # DETECTING
+        tb.update("H", True, now + 0.1)  # LOCKED → appends "H"
+
+        self.assertEqual(tb.current_word, "H")
+
+    def test_duplicate_suppression_while_held(self) -> None:
+        """Same letter held continuously must not produce duplicates."""
+        tb = TextBuilder()
+        tb.MIN_LETTER_DURATION = 0.0
+
+        now = time.time()
+        tb.update("A", True, now)
+        tb.update("A", True, now + 0.1)  # locks in "A"
+        tb.update("A", True, now + 0.2)  # still held — no re-emission
+        tb.update("A", True, now + 0.3)
+
+        self.assertEqual(tb.current_word, "A")
+
+    def test_word_commit_on_hand_absent(self) -> None:
+        """Word is committed to sentence after hand is absent past SPACE_TIMEOUT."""
+        tb = TextBuilder()
+        tb.MIN_LETTER_DURATION = 0.0
+        tb.SPACE_TIMEOUT = 0.1
+
+        now = time.time()
+        # Sign H then I so current_word becomes "HI" (exact dict word → kept as-is)
+        tb.update("H", True, now)
+        tb.update("H", True, now + 0.05)   # lock "H"
+        tb.update("I", True, now + 0.06)   # switch to "I" — resets DETECTING
+        tb.update("I", True, now + 0.12)   # lock "I"
+        tb.update(None, False, now + 0.25) # hand absent > SPACE_TIMEOUT → commit
+
+        self.assertEqual(tb.current_word, "")      # word flushed
+        self.assertIn("HI", tb.sentence)           # "HI" is an exact dict match
+
+    def test_update_returns_correct_tuple_type(self) -> None:
+        """update() must accept exactly (stable_letter, hand_detected, timestamp)."""
+        tb = TextBuilder()
+        word, sentence, suggestions = tb.update(None, False, time.time())
+        self.assertIsInstance(word, str)
+        self.assertIsInstance(sentence, str)
+        self.assertIsInstance(suggestions, list)
+
+    def test_reset_clears_everything(self) -> None:
+        """reset() wipes all state."""
+        tb = TextBuilder()
+        tb.MIN_LETTER_DURATION = 0.0
+        now = time.time()
+        tb.update("X", True, now)
+        tb.update("X", True, now + 0.1)
+        tb.reset()
+
         self.assertEqual(tb.current_word, "")
-        self.assertEqual(tb.sentence, "I HELLO ")
+        self.assertEqual(tb.sentence, "")
 
 
 if __name__ == "__main__":

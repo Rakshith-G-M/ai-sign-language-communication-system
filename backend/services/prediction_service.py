@@ -2,8 +2,9 @@
 ASL Prediction Service
 ──────────────────────────────────────────────
 
-Handles the core inference pipeline:
-image → prediction → word/sentence building
+Handles the static alphabet inference pipeline:
+    image → MediaPipe → Static XGBoost Model → Prediction Stabilizer
+          → Stabilized Letter → TextBuilder (word / sentence) → response
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ import cv2
 import numpy as np
 
 from core.config import settings
-from core.inference.dynamic_predictor import DynamicPredictor
 from core.inference.prediction_session import PredictionSession
 from core.inference.realtime_asl_predictor import is_static_predictor_ready, predict_frame
 from schemas.common import normalize_session_id
@@ -31,23 +31,21 @@ class ServiceMetrics:
 
     total_predictions: int = 0
     static_predictions: int = 0
-    dynamic_predictions: int = 0
 
 
 @dataclass
 class ASLPredictionService:
     """
-    Wraps prediction + text building logic.
-    Maintains state across frames isolated inside sessions.
+    Wraps static-alphabet prediction + text building logic.
+    Maintains per-session state for multi-client / concurrent support.
     """
 
     started_at: float = field(default_factory=time.time)
     sessions: dict[str, PredictionSession] = field(default_factory=dict)
-    dynamic_predictor: DynamicPredictor = field(default_factory=DynamicPredictor)
     metrics: ServiceMetrics = field(default_factory=ServiceMetrics)
 
     def __post_init__(self) -> None:
-        log.info("ASL Prediction Service initialized with session isolation")
+        log.info("ASL Prediction Service initialized (static alphabet pipeline)")
 
     # ─────────────────────────────────────────────────────────────────────
     # Session management
@@ -144,7 +142,7 @@ class ASLPredictionService:
             return self._error_response("Invalid base64 input", start_time, session)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Core pipeline
+    # Core static alphabet pipeline
     # ─────────────────────────────────────────────────────────────────────
     def _run_pipeline(
         self,
@@ -154,30 +152,14 @@ class ASLPredictionService:
         session_id: str | None = None,
     ) -> dict:
         prediction_start = time.perf_counter()
-        used_dynamic = False
 
         try:
             annotated_frame, stable_letter, hand_detected = predict_frame(frame, session)
-
-            stable_word = None
-            dynamic_confidence = 0.0
-            if hand_detected:
-                from core.inference.motion_classifier import is_hand_moving
-
-                if is_hand_moving(session.landmarks_history):
-                    stable_letter = None
-                    predicted_word, dynamic_confidence = self.dynamic_predictor.predict_sequence(
-                        session.landmarks_history
-                    )
-                    if predicted_word:
-                        stable_word = predicted_word
-                        used_dynamic = True
 
             current_word, sentence, suggestions = session.text_builder.update(
                 stable_letter,
                 hand_detected,
                 time.time(),
-                stable_word=stable_word,
             )
 
             finalized_sentence = session.text_builder.pop_final_sentence()
@@ -185,9 +167,7 @@ class ASLPredictionService:
             prediction_ms = round((time.perf_counter() - prediction_start) * 1000, 2)
 
             self.metrics.total_predictions += 1
-            if stable_word:
-                self.metrics.dynamic_predictions += 1
-            elif stable_letter:
+            if stable_letter:
                 self.metrics.static_predictions += 1
 
             log.info(
@@ -197,16 +177,16 @@ class ASLPredictionService:
                     "latency_ms": latency,
                     "hand_detected": hand_detected,
                     "letter": stable_letter,
-                    "word": stable_word or current_word,
-                    "confidence": dynamic_confidence if used_dynamic else (1.0 if stable_letter else 0.0),
-                    "model": "dynamic" if used_dynamic else "static",
+                    "word": current_word,
+                    "confidence": 1.0 if stable_letter else 0.0,
+                    "model": "static",
                     "session_id": normalize_session_id(session_id),
                 },
             )
 
             return {
                 "letter": stable_letter,
-                "confidence": 1.0 if (stable_letter or stable_word) else 0.0,
+                "confidence": 1.0 if stable_letter else 0.0,
                 "word": current_word,
                 "sentence": sentence,
                 "suggestions": suggestions,
@@ -261,7 +241,6 @@ class ASLPredictionService:
         return {
             "static_model": is_static_predictor_ready(),
             "mediapipe": is_static_predictor_ready(),
-            "dynamic_predictor": True,  # always available (ONNX or geometric fallback)
             "prediction_service": True,
         }
 
@@ -275,7 +254,8 @@ class ASLPredictionService:
             "active_sessions": len(self.sessions),
             "total_predictions": self.metrics.total_predictions,
             "static_predictions": self.metrics.static_predictions,
-            "dynamic_predictions": self.metrics.dynamic_predictions,
+            # Retained at zero for frontend schema compatibility
+            "dynamic_predictions": 0,
         }
 
     def shutdown(self) -> None:

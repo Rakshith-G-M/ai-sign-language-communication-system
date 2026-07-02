@@ -48,7 +48,6 @@ def test_readiness_returns_structured_checks(client):
     assert set(data["checks"].keys()) == {
         "static_model",
         "mediapipe",
-        "dynamic_predictor",
         "prediction_service",
     }
 
@@ -62,6 +61,7 @@ def test_metrics_endpoint(client):
     assert "total_predictions" in data
     assert "static_predictions" in data
     assert "dynamic_predictions" in data
+    assert data["dynamic_predictions"] == 0
 
 
 def test_predict_invalid_mime_returns_400(client):
@@ -119,18 +119,3 @@ def test_info_lists_endpoints(client):
     assert "/health" in endpoints
 
 
-def test_collect_sequence_validation(client):
-    bad_frame = [[0.0] * 62]
-    response = client.post(
-        "/api/v1/collect/sequence",
-        json={"label": "HELLO", "frames": bad_frame},
-    )
-    assert response.status_code == 422
-
-
-def test_collect_sequence_too_short(client):
-    response = client.post(
-        "/api/v1/collect/sequence",
-        json={"label": "HELLO", "frames": [[0.0] * 63 for _ in range(3)]},
-    )
-    assert response.status_code == 400

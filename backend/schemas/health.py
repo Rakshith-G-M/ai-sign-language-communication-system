@@ -12,7 +12,6 @@ class LivenessResponse(BaseModel):
 class ReadinessCheck(BaseModel):
     static_model: bool
     mediapipe: bool
-    dynamic_predictor: bool
     prediction_service: bool
 
 
@@ -26,4 +25,4 @@ class MetricsResponse(BaseModel):
     active_sessions: int
     total_predictions: int
     static_predictions: int
-    dynamic_predictions: int
+    dynamic_predictions: int   # Always 0; retained for frontend schema compatibility

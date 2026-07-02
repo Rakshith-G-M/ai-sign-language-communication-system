@@ -1,11 +1,8 @@
 import { memo } from 'react'
 import { motion } from 'framer-motion'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
 import { ConfidenceMeter } from '@/features/inference/components/ConfidenceMeter'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { useInferenceStore } from '@/features/inference/store/inferenceStore'
-import { scaleIn } from '@/lib/motion'
 import { cn } from '@/lib/cn'
 
 interface PredictionCardProps {
@@ -13,11 +10,11 @@ interface PredictionCardProps {
 }
 
 export const PredictionCard = memo(function PredictionCard({ compact }: PredictionCardProps) {
-  const reducedMotion = useReducedMotion()
+  // Selectors must be called directly at the component top level — never inside
+  // useMemo. The previous useMemo(()=>{...},[]) pattern captured initial null/0
+  // values once at mount and never re-ran, causing the panel to stay blank.
   const letter = useInferenceStore((s) => s.prediction.letter)
   const confidence = useInferenceStore((s) => s.prediction.confidence)
-  const isRunning = useInferenceStore((s) => s.isRunning)
-  const isLoading = isRunning && !letter
 
   if (compact) {
     return (
@@ -36,29 +33,37 @@ export const PredictionCard = memo(function PredictionCard({ compact }: Predicti
         <CardTitle className="text-base">Current Prediction</CardTitle>
       </CardHeader>
       <CardContent>
-        {isLoading ? (
-          <Skeleton className="h-20 w-full" />
-        ) : (
-          <div className="flex flex-col items-center py-2">
-            <motion.div
-              key={letter ?? 'empty'}
-              {...(reducedMotion ? {} : scaleIn)}
-              className={cn(
-                'font-mono text-6xl font-semibold tracking-tight',
-                !letter && 'text-muted-foreground',
-              )}
-              aria-live="polite"
-            >
-              {letter ?? '—'}
-            </motion.div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {letter ? 'Stable letter detected' : 'Sign a letter to begin'}
-            </p>
-            <div className="mt-4 w-full">
-              <ConfidenceMeter value={confidence} size="md" showLabel />
-            </div>
+        {/* Fixed height container - prevents layout shift */}
+        <div className="h-32 w-full flex flex-col items-center justify-center py-2">
+          {/* No skeleton shown - card is always mounted and stable */}
+          <motion.div
+            initial={false}
+            className={cn(
+              'font-mono text-6xl font-semibold tracking-tight transition-opacity duration-200',
+              !letter && 'text-muted-foreground opacity-50',
+              letter && 'opacity-100',
+            )}
+            aria-live="polite"
+            aria-atomic="false"
+          >
+            {letter ?? '—'}
+          </motion.div>
+          
+          {/* Status message - animates in/out */}
+          <motion.p
+            initial={false}
+            animate={{ opacity: 1 }}
+            className="mt-3 text-sm text-muted-foreground h-5"
+            aria-live="polite"
+          >
+            {letter ? 'Stable letter detected' : 'Sign a letter to begin'}
+          </motion.p>
+          
+          {/* Confidence meter - always visible, animates smoothly */}
+          <div className="mt-4 w-full">
+            <ConfidenceMeter value={confidence} size="md" showLabel />
           </div>
-        )}
+        </div>
       </CardContent>
     </Card>
   )

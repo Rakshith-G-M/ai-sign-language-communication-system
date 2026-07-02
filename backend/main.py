@@ -21,7 +21,6 @@ from core.exceptions import register_exception_handlers
 from core.inference.realtime_asl_predictor import shutdown_static_predictor
 from core.logging_config import configure_logging, flush_logging
 from core.middleware import RequestLoggingMiddleware
-from routers.data_collection import router as data_collection_router
 from routers.prediction import router as prediction_router
 from schemas.health import LivenessResponse, MetricsResponse, ReadinessResponse
 from services.prediction_service import ASLPredictionService
@@ -39,7 +38,6 @@ async def lifespan(app: FastAPI):
     log.info("Environment: %s", settings.environment)
     log.info("Project root: %s", settings.project_root)
     log.info("Models dir:   %s", settings.models_dir)
-    log.info("Dataset path: %s", settings.dynamic_dataset_path)
     log.info("CORS origins: %s", settings.cors_origin_list)
     log.info("API Docs: http://localhost:%s/docs", settings.port)
     log.info("Health:   http://localhost:%s/health", settings.port)
@@ -67,8 +65,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     description=(
-        "Real-time sign language recognition via MediaPipe + XGBoost (static) "
-        "and LSTM/ONNX (dynamic). "
+        "Real-time ASL alphabet recognition via MediaPipe + XGBoost. "
         "Configure production CORS via the CORS_ORIGINS environment variable."
     ),
     version=settings.app_version,
@@ -152,7 +149,6 @@ async def metrics(
 
 
 app.include_router(prediction_router)
-app.include_router(data_collection_router)
 
 
 if __name__ == "__main__":

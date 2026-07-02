@@ -46,6 +46,7 @@ export function usePredictionLoop({ captureBlob, speak }: UsePredictionLoopOptio
   const resetMutation = useMutation({
     mutationFn: () => resetSession(sessionIdRef.current),
     onSuccess: () => {
+      console.debug('[inference] sentence reset')
       useInferenceStore.getState().resetPrediction()
       useInferenceStore.getState().resetStats()
       useInferenceStore.getState().appendTimelineEvent({ type: 'reset', label: 'Session reset' })
@@ -66,6 +67,13 @@ export function usePredictionLoop({ captureBlob, speak }: UsePredictionLoopOptio
     try {
       const data = await predictAsyncRef.current(blob)
       const processingMs = Math.round(performance.now() - startTime)
+
+      console.debug('[inference] prediction received', {
+        letter: data.letter,
+        confidence: data.confidence,
+        word: data.word,
+        hand_detected: data.hand_detected,
+      })
 
       const now = performance.now()
       frameTimestampsRef.current.push(now)
@@ -92,6 +100,7 @@ export function usePredictionLoop({ captureBlob, speak }: UsePredictionLoopOptio
       })
 
       if (data.letter && data.letter !== lastLetterRef.current && data.confidence > 0) {
+        console.debug('[inference] prediction stabilized', { letter: data.letter, confidence: data.confidence })
         store.appendTimelineEvent({ type: 'letter', label: data.letter })
         lastLetterRef.current = data.letter
       }
@@ -105,10 +114,17 @@ export function usePredictionLoop({ captureBlob, speak }: UsePredictionLoopOptio
       lastWordRef.current = data.word
 
       if (data.finalized_sentence) {
-        store.appendTimelineEvent({ type: 'sentence', label: data.finalized_sentence })
-        useHistoryStore.getState().addEntry(data.finalized_sentence)
-        if (autoSpeak) {
-          speakRef.current(data.finalized_sentence)
+        // Guard: only commit the finalized sentence if inference is still running.
+        // An in-flight API response can resolve after the user clicks Stop, which
+        // would otherwise silently append a word to a stopped session.
+        const stillRunning = useInferenceStore.getState().isRunning
+        if (stillRunning) {
+          console.debug('[inference] sentence appended', { sentence: data.finalized_sentence })
+          store.appendTimelineEvent({ type: 'sentence', label: data.finalized_sentence })
+          useHistoryStore.getState().addEntry(data.finalized_sentence)
+          if (autoSpeak) {
+            speakRef.current(data.finalized_sentence)
+          }
         }
       }
     } catch (err) {

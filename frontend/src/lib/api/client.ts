@@ -94,8 +94,32 @@ export async function apiBlob(path: string, options: RequestOptions = {}): Promi
   })
 
   if (!response.ok) {
-    throw new ApiError(`Request failed: ${response.status}`, response.status)
+    let detail: unknown
+    try {
+      detail = await response.json()
+    } catch {
+      detail = await response.text()
+    }
+    throw new ApiError(
+      `Request failed: ${response.status}`,
+      response.status,
+      detail,
+    )
   }
 
-  return response.blob()
+  const blob = await response.blob()
+
+  // Validate blob response
+  if (!blob) {
+    throw new ApiError('Response blob is null or undefined', 500)
+  }
+
+  // Warn if MIME type doesn't match expected audio types
+  const contentType = response.headers.get('Content-Type') ?? ''
+  const expectedAudioTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/webm', 'audio/ogg']
+  if (contentType && !expectedAudioTypes.some(type => contentType.includes(type))) {
+    console.warn(`Expected audio MIME type but got: ${contentType}`)
+  }
+
+  return blob
 }
