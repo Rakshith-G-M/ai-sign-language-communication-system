@@ -180,7 +180,7 @@ ai-sign-language-communication-system/
 ## Screenshots
 
 ### Dashboard & Prediction Interface
-![Dashboard](assets/ui-screenshot.png)
+![Dashboard](assets/UI-screenshot.png)
 *Figure 1: The real-time interactive prediction dashboard interface.*
 
 
