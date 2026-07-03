@@ -45,9 +45,8 @@ data/
 datasets/
 
 # Training outputs
-models/
-*.pkl
-*.joblib
+
+
 *.onnx
 *.npz
 *.npy
