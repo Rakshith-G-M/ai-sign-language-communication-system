@@ -63,10 +63,11 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # ── CORS ─────────────────────────────────────────────────────────────
-    # Comma-separated list of allowed origins.  Default "*" keeps local dev
-    # frictionless.  For production set e.g.:
+    # Comma-separated list of allowed origins.
+    # Default is localhost ports to prevent wildcard Starlette credential exceptions.
+    # For production, override this by setting the CORS_ORIGINS environment variable, e.g.:
     #   CORS_ORIGINS=https://app.example.com,https://www.example.com
-    cors_origins: str = "*"
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
     cors_allow_credentials: bool = True
 
     @property
@@ -81,8 +82,8 @@ class Settings(BaseSettings):
     log_format: Literal["text", "json"] = "text"
 
     # ── Request limits ───────────────────────────────────────────────────
-    max_upload_bytes: int = 10 * 1024 * 1024          # 10 MB
-    max_base64_chars: int = 14_000_000                 # ~10 MB decoded
+    max_upload_bytes: int = 1 * 1024 * 1024            # 1 MB
+    max_base64_chars: int = 1_500_000                  # ~1 MB decoded
     max_tts_chars: int = 5_000
     max_session_id_length: int = 128
 

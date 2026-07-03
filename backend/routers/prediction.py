@@ -71,7 +71,8 @@ async def generate_tts(
         )
 
     except TTSServiceError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        log.error("TTS Service Error: %s", exc)
+        raise HTTPException(status_code=500, detail="Speech generation failed") from exc
     except Exception as exc:
         log.error("TTS router error: %s - Type: %s", exc, type(exc).__name__)
         raise HTTPException(status_code=500, detail="Speech generation failed") from exc

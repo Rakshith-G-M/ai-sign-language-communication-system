@@ -8,7 +8,12 @@ export function getSessionId(): string {
     return stored
   }
 
-  const id = `${Math.random().toString(36).slice(2, 11)}_${Date.now()}`
+  let id: string
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    id = crypto.randomUUID()
+  } else {
+    id = `${Math.random().toString(36).slice(2, 11)}_${Date.now()}`
+  }
   sessionStorage.setItem(SESSION_STORAGE_KEY, id)
   return id
 }

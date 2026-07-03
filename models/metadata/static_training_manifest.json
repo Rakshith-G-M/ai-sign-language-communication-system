@@ -32,7 +32,7 @@
     "Z"
   ],
   "created_at": "2026-07-01T12:59:29.775211+00:00",
-  "dataset_path": "/Users/rakshith/Documents/projects/ai-sign-language-communication-system/dataset/asl_landmarks_dataset.csv",
+  "dataset_path": "dataset/asl_landmarks_dataset.csv",
   "feature_dim": 134,
   "model_type": "xgboost",
   "model_version": "static-xgboost-v2",
